@@ -1,13 +1,9 @@
 import pygame
 from utils import load_sprite
-from models import GameObject, Board, Factory, Tile
+from models import GameObject, Board, Factory, Tile, Center
+from models import SIZE_SCREEN, SIZE_BOARD, SIZE_FACTORY, SIZE_TILE
 from pygame.math import Vector2
 from logic import Table
-
-SIZE_SCREEN = Vector2([1280, 720])
-SIZE_BOARD = Vector2([600, 400])
-SIZE_FACTORY = Vector2([130, 130])
-SIZE_TILE = Vector2([50, 50])
 
 
 class Azul:
@@ -15,30 +11,32 @@ class Azul:
         self._init_pygame()
 
         self.logic = Table()
-        self.logic.reset()
+        # self.logic.reset()
         obs = self.logic.get_observation()
-        print(obs['center'])
 
         self.screen = pygame.display.set_mode(SIZE_SCREEN)
         self.clock = pygame.time.Clock()
 
-        numPlayers, numFactories = self.logic.numPlayers, self.logic.numFactories
+        numPlayers, numFactories = len(obs['player']), len(obs['factory'])
         sb, sf, s = SIZE_BOARD, SIZE_FACTORY, SIZE_SCREEN
         st = SIZE_TILE[0]
         ssb = SIZE_BOARD * 0.6
         g, x = 10, SIZE_BOARD[0] * 0.6
         w = s[0] - numPlayers*g - (numPlayers-1)*x
         y = s[1] - ssb[1]/2 - g
-        p1 = 1
+        p1 = obs['activePlayer']
 
+        # position boards
         self.board = [
-            Board(b, (g + (g+x)*i + x/2, y), size=SIZE_BOARD, zoom=0.6) if i < p1
-            else (Board(b, (g + (g+x)*(i-1) + x/2 + w, y), size=SIZE_BOARD, zoom=0.6) if i > p1
-                  else Board(b, SIZE_BOARD / 2 + Vector2(g, g), size=SIZE_BOARD, zoom=1.0))
+            Board(f'Player {i+1}', b, (g + (g+x)*i + x/2, y), size=SIZE_BOARD, zoom=0.6) if i < p1
+            else (Board(f'Player {i+1}', b, (g + (g+x)*(i-1) + x/2 + w, y), size=SIZE_BOARD, zoom=0.6) if i > p1
+                  else Board(f'Player {i+1}', b, SIZE_BOARD / 2 + Vector2(g, g), size=SIZE_BOARD, zoom=1.0))
             for i, b in enumerate(obs['player'])
         ]
+        self.activeBoard = self.board[p1]
 
-        x1, x2 = sb.x + sf.x/2 + 2*g, s.x - sf.y/2 - g
+        # position factories
+        x1, x2 = sb.x + sf.x/2 + 1.5*g, s.x - sf.y/2 - 0.5*g
         y1, y2 = (sb.y + 2*g)/2 - (sf.y+2*st+g)/2 - g, \
             (sb.y + 2*g)/2 + (sf.y+2*st+g)/2 + g
         self.factory = [
@@ -46,12 +44,10 @@ class Azul:
             else Factory(f, (x1 + (x2-x1)*(i-5)/4, y2), size=SIZE_FACTORY)
             for i, f in enumerate(obs['factory'])]
 
-        x1, xw = sb.x + st/2 + 3*g, s.x - sb.x - 4*g
-        y1, y2 = (sb.y + 2*g)/2 - (st+g)/2, (sb.y + 2*g)/2 + (st+g)/2,
-        self.center = [
-            Tile(Vector2(x1 + xw*i/10, y1) if i < 10
-                 else Vector2(x1 + xw*(i-10)/10, y2), m)
-            for i, m in enumerate(obs['center'])]
+        # position center tiles
+        sz = Vector2(s.x - sb.x - 3*g, 2*st + 2*g)
+        s0 = Vector2(sb.x + 2*g + sz.x/2, sb.y/2 + g)
+        self.center = Center(obs['center'], s0, sz)
 
     def main_loop(self):
         while True:
@@ -69,6 +65,19 @@ class Azul:
                 event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
             ):
                 quit()
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+
+                if self.activeBoard.rect.collidepoint(event.pos):
+                    self.activeBoard.mouse_callback(event)
+                    break
+
+                if self.center.rect.collidepoint(event.pos):
+                    self.center.mouse_callback(event)
+                    break
+
+                for factory in self.factory:
+                    if factory.rect.collidepoint(event.pos):
+                        factory.mouse_callback(event)
 
     def _process_game_logic(self):
         pass
@@ -85,8 +94,9 @@ class Azul:
             factory.draw(self.screen)
 
         # self.factory.draw(self.screen)
-        for tile in self.center:
-            tile.draw(self.screen)
+        self.center.draw(self.screen)
+        # for tile in self.center:
+        #     tile.draw(self.screen)
 
         pygame.display.flip()
         self.clock.tick(20)

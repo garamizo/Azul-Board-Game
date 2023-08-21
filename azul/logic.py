@@ -57,7 +57,8 @@ class Board:
                 discard += line[1:]
                 self.line[row] = []
 
-        self.score += FLOOR_PATTERN[:len(self.floor)].sum()
+        # disregard 8th+ floor tiles
+        self.score += FLOOR_PATTERN[:min([7, len(self.floor)])].sum()
         if self.score < 0:
             self.score = 0
         self.floor = []
@@ -111,7 +112,8 @@ class Board:
 
 
 class Table:
-    numPlayers = 4
+    numPlayers = 3
+    activePlayer = 1
 
     def __init__(self):
         self.bag = np.random.permutation(
@@ -131,6 +133,7 @@ class Table:
             [1], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
         ]
         self.player[2].floor = [-1, 2, 4]
+        self.player[2].score = 10
         self.center = [-1] + [1]*5 + [2]*5 + [3]*5
 
     def reset(self):
@@ -179,6 +182,7 @@ class Table:
             'factory': self.factory,
             'center': self.center,
             'player': [],
+            'activePlayer': self.activePlayer
         }
         obs['player'] = [
             {'grid': self.player[i].grid,
