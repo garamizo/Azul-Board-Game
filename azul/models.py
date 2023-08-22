@@ -9,6 +9,11 @@ SIZE_BOARD = Vector2([600, 400])
 SIZE_FACTORY = Vector2([130, 130])
 SIZE_TILE = Vector2([50, 50])
 
+WHITE = (255, 255, 255)
+BEIGE = (240, 186, 140)
+BLACK = (0, 0, 0)
+YELLOW = (255, 255, 50)
+
 
 class GameObject:
     def __init__(self, position, sprite, size, zoom=1):
@@ -84,11 +89,15 @@ class Board(GameObject):
             graph.draw(surface)
 
         # draw label
-        font = pygame.font.SysFont(None, 30)
+        font = pygame.font.SysFont(None, 50)
         img = font.render(
-            f"{self.name}: {self.content['score']}", True, (0, 0, 0))
+            f"{self.name}: {self.content['score']}", True, BLACK, BEIGE)
+        img = scale(img, Vector2(img.get_size()) * self.zoom)
         pos = self.position + Vector2(10-900/2, 10-600/2)*2/3 * self.zoom
-        surface.blit(scale(img, Vector2(img.get_size()) * self.zoom), pos)
+        surface.blit(img, pos)
+
+    def set_score(self, score):
+        self.content['score'] = score
 
     def mouse_callback(self, event):
         # assume is active player, zoom=1
@@ -118,13 +127,14 @@ class Tile(GameObject):
         5: "tile_white.png"
     }
 
-    def __init__(self, position, mark=1, size=(50, 50), zoom=1.0):
+    def __init__(self, position, mark=1, size=Vector2(50, 50), zoom=1.0):
         super().__init__(
             position,
             scale(load_sprite(self.idx_to_path[mark]), size),
             size,
             zoom
         )
+        self.rect = pygame.Rect(position - size/2, size)
 
 
 class Factory(GameObject):
@@ -137,29 +147,30 @@ class Factory(GameObject):
         )
         self.content = content
 
-        w = size[0] * 30/130
-        self.offset = [
-            Vector2(-w, -w),
-            Vector2(w, -w),
-            Vector2(-w, w),
-            Vector2(w, w)
-        ]
-        self.tiles = [
-            Tile(position, content[i]) for i in range(len(content))]
+        if len(content) == 0:
+            self.tiles = []
+        else:
+            w = size[0] * 30/130 * self.zoom
+            offset = [
+                Vector2(-w, -w),
+                Vector2(w, -w),
+                Vector2(-w, w),
+                Vector2(w, w)
+            ]
+            self.tiles = [
+                Tile(position + r, content[i], zoom=self.zoom) for i, r in enumerate(offset)]
         self.rect = pygame.Rect(position - size/2, size)
 
     def draw(self, surface):
         super().draw(surface)
 
-        for tile, offset in zip(self.tiles, self.offset):
-            tile.position = self.position + offset * self.zoom
-            tile.zoom = self.zoom
+        for tile in self.tiles:
             tile.draw(surface)
 
     def mouse_callback(self, event):
-        # return mark and numMark. If empty, return 0, 0
+        # return mark and numMark. If empty, return None, None
         if len(self.tiles) == 0:
-            mark, numMark = 0, 0
+            mark, numMark = None, None
         else:
             pos = event.pos - self.position
             tileIdx = (pos[0] > 0)*1 + (pos[1] > 0)*2
@@ -200,14 +211,14 @@ class Center(GameObject):
         isFirst = self.content.count(-1) > 0
 
         if len(self.tiles) == 0:
-            mark, numMark = 0, 0
+            mark, numMark = None, None
         else:
             pos = (event.pos - (self.position - self.size/2))
             ixy = np.floor(pos * 10 / self.size.x)
 
             tileIdx = int(ixy[0] + ixy[1] * 10)
-            if tileIdx >= len(self.content):
-                mark, numMark = 0, 0
+            if tileIdx >= len(self.content) or self.content[tileIdx] == -1:
+                mark, numMark = None, None
             else:
                 mark = self.content[tileIdx]
                 numMark = self.content.count(mark)

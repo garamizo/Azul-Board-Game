@@ -44,7 +44,13 @@ class Board:
                     ):
                         return i-1
 
-            return 2 + count(1, 0) + count(0, 1) + count(-1, 0) + count(0, -1)
+            hpts = count(1, 0) + count(-1, 0) + 1
+            vpts = count(0, 1) + count(0, -1) + 1
+            pts = hpts + vpts
+            if hpts == 1 or vpts == 1:
+                pts -= 1
+
+            return pts
 
         discard = [] + self.floor
 
@@ -112,8 +118,8 @@ class Board:
 
 
 class Table:
-    numPlayers = 3
-    activePlayer = 1
+    numPlayers = 4
+    activePlayer = 0
 
     def __init__(self):
         self.bag = np.random.permutation(
@@ -121,8 +127,28 @@ class Table:
         self.discard = []
         self.player = [Board() for _ in range(self.numPlayers)]
         self.numFactories = NUM_FACTORY_VS_PLAYER[self.numPlayers]
+        self.roundIdx = 0
         self.reset()
 
+        # self.player[2].grid = np.array([
+        #     [1, 2, 3, 4, 5],
+        #     [0, 1, 0, 3, 4],
+        #     [4, 0, 1, 0, 3],
+        #     [0, 4, 0, 0, 2],
+        #     [0, 3, 4, 0, 0]])
+        # self.player[2].line = [
+        #     [1], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
+        # ]
+        # self.player[2].floor = [-1, 2, 4]
+        # self.player[2].score = 10
+        # self.center = [-1] + [1]*5 + [2]*5 + [3]*5
+
+        # # end of round
+        # self.factory = [[]] * self.numFactories
+        # self.factory[0] = self.bag[:4].tolist()
+
+        # end of game
+        self.factory = [[]] * self.numFactories
         self.player[2].grid = np.array([
             [1, 2, 3, 4, 5],
             [0, 1, 0, 3, 4],
@@ -134,7 +160,7 @@ class Table:
         ]
         self.player[2].floor = [-1, 2, 4]
         self.player[2].score = 10
-        self.center = [-1] + [1]*5 + [2]*5 + [3]*5
+        self.center = [1]*2
 
     def reset(self):
         # reshuffle tiles from discard
@@ -156,11 +182,11 @@ class Table:
             player.print()
         print("\n")
 
-    def step_move(self, mark, factoryIdx, playerIdx, row):
+    def step_move(self, mark, factoryIdx, row):
         # step game for a single player move
 
         factory = self.factory[factoryIdx] if factoryIdx >= 0 else self.center
-        player = self.player[playerIdx]
+        player = self.player[self.activePlayer]
         numMark = factory.count(mark)
 
         assert numMark > 0, "Mark not available"
@@ -177,12 +203,29 @@ class Table:
             self.center += factory
             factory.clear()
 
+        self.activePlayer = (self.activePlayer + 1) % self.numPlayers
+
+        if self.is_round_over():
+            self.roundIdx += 1
+            # update score, get discards, find next first player
+            for i, player in enumerate(self.player):
+                discardi = player.step_round()
+                if discardi.count(-1) > 0:
+                    self.activePlayer = i
+                self.discard += discardi
+
+            if not self.is_game_over():
+                self.discard.remove(-1)
+                self.reset()
+
     def get_observation(self):
         obs = {
             'factory': self.factory,
             'center': self.center,
             'player': [],
-            'activePlayer': self.activePlayer
+            'activePlayer': self.activePlayer,
+            'roundIdx': self.roundIdx,
+            'isGameOver': self.is_game_over() and self.is_round_over()
         }
         obs['player'] = [
             {'grid': self.player[i].grid,
@@ -206,7 +249,8 @@ class Table:
                     playerIdx, obs)
                 self.step_move(mark, factoryIdx, playerIdx, row)
                 # change to next player
-                playerIdx = (playerIdx + 1) % self.numPlayers
+                # playerIdx = (playerIdx + 1) % self.numPlayers
+                playerIdx = self.activePlayer
 
             # update score, get discards, find next first player
             for i, player in enumerate(self.player):
@@ -220,9 +264,23 @@ class Table:
                 self.discard.remove(-1)
                 self.reset()
 
-    def is_valid(self, mark, factoryIdx, playerIdx, row):
-        # TODO
-        assert False, "Not implemented"
+    def is_valid(self, mark, factoryIdx, row):
+        player = self.player[self.activePlayer]
+        factory = self.factory[factoryIdx] if factoryIdx >= 0 else self.center
+        numMark = factory.count(mark)
+
+        # valid for factory
+        if numMark == 0:
+            return False
+
+        # valid for player
+        if row == -1:
+            return True
+        return (
+            len(player.line[row]) <= row
+            and (len(player.line[row]) == 0 or player.line[row][0] == mark)
+            and np.all(player.grid[row] != mark)
+        )
 
     def is_round_over(self):
         # true if all factories and center are empty
