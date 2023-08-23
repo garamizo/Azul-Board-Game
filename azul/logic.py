@@ -130,6 +130,27 @@ class Table:
         self.roundIdx = 0
         self.reset()
 
+        # full board ===========================
+        # p = 1
+        # self.player[p].grid = np.array([
+        #     [1, 2, 3, 4, 5],
+        #     [0, 1, 0, 3, 4],
+        #     [4, 0, 1, 0, 3],
+        #     [0, 4, 0, 0, 2],
+        #     [0, 3, 4, 0, 0]])
+        # self.player[p].line = [
+        #     [1], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
+        # ]
+        # self.player[p].floor = [-1, 2, 4]
+        # self.player[p].score = 10
+        # self.center = [-1] + [1]*5 + [2]*5 + [3]*5
+
+        # sim end of round ======================
+        self.factory = [[]] * self.numFactories
+        self.center = [-1] + [1]*2 + [2]*3 + [3]*2
+
+        # sim end of game =======================
+        # self.factory = [[]] * self.numFactories
         # self.player[2].grid = np.array([
         #     [1, 2, 3, 4, 5],
         #     [0, 1, 0, 3, 4],
@@ -141,26 +162,7 @@ class Table:
         # ]
         # self.player[2].floor = [-1, 2, 4]
         # self.player[2].score = 10
-        # self.center = [-1] + [1]*5 + [2]*5 + [3]*5
-
-        # # end of round
-        # self.factory = [[]] * self.numFactories
-        # self.factory[0] = self.bag[:4].tolist()
-
-        # end of game
-        self.factory = [[]] * self.numFactories
-        self.player[2].grid = np.array([
-            [1, 2, 3, 4, 5],
-            [0, 1, 0, 3, 4],
-            [4, 0, 1, 0, 3],
-            [0, 4, 0, 0, 2],
-            [0, 3, 4, 0, 0]])
-        self.player[2].line = [
-            [1], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
-        ]
-        self.player[2].floor = [-1, 2, 4]
-        self.player[2].score = 10
-        self.center = [1]*2
+        # self.center = [1]*2 + [2]*2 + [3]*2
 
     def reset(self):
         # reshuffle tiles from discard
@@ -319,10 +321,11 @@ def valid_move(obs, playerIdx, factoryIdx, mark, row):
     )
 
 
-def random_move(playerIdx, obs):
+def random_move(obs):
     # random valid move
     MAX_TRIES = 1000
 
+    playerIdx = obs['activePlayer']
     numFactories = len(obs['factory'])
     foundValid = False
     for reps in range(MAX_TRIES):

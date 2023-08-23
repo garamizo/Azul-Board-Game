@@ -28,7 +28,7 @@ class GameObject:
 
 
 class Board(GameObject):
-    def __init__(self, name, content, position, size=(600, 400), zoom=1.0):  # 900x600
+    def __init__(self, name, content, position, size=(600, 400), zoom=1.0, isHuman=False):  # 900x600
         super().__init__(
             position,
             scale(load_sprite("board2.png"), size),
@@ -38,6 +38,7 @@ class Board(GameObject):
         self.content = content
         self.name = name
         self.rect = pygame.Rect(position - size/2, size)
+        self.isHuman = isHuman
         # {'grid': np.array 5x5,
         #  'line': [[]]*5,
         #  'score': int,
@@ -95,6 +96,9 @@ class Board(GameObject):
         img = scale(img, Vector2(img.get_size()) * self.zoom)
         pos = self.position + Vector2(10-900/2, 10-600/2)*2/3 * self.zoom
         surface.blit(img, pos)
+
+    def set_content(self, content):
+        self.content = content
 
     def set_score(self, score):
         self.content['score'] = score

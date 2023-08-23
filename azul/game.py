@@ -4,13 +4,17 @@ from models import GameObject, Board, Factory, Tile, Center
 from models import SIZE_SCREEN, SIZE_BOARD, SIZE_FACTORY, SIZE_TILE
 from models import BLACK, BEIGE, WHITE, YELLOW
 from pygame.math import Vector2
-from logic import Table
+from logic import Table, random_move
 import copy
 
-DELAY_ANIMATION = 200
+DELAY_ANIMATION = 250
+DELAY_AI_MOVE = 1500
+AI_MOVE = pygame.USEREVENT + 1
 
 
 class Azul:
+    isHumanPlayer = [True, False, False, False]
+
     def __init__(self):
         self._init_pygame()
         pygame.mixer.init()
@@ -28,8 +32,12 @@ class Azul:
             'assets/sounds/mixkit-paper-slide-1530.wav')
         self.SOUND_SCORE = pygame.mixer.Sound(
             'assets/sounds/mixkit-small-win-2020.wav')
-        self.SOUND_OVER = pygame.mixer.Sound(
+        self.SOUND_HUMAN_WIN = pygame.mixer.Sound(
             'assets/sounds/mixkit-medieval-show-fanfare-announcement-226.wav')
+        self.SOUND_AI_WIN = pygame.mixer.Sound(
+            'assets/sounds/mixkit-video-game-bomb-alert-2803.wav')
+        self.SOUND_AI_TURN = pygame.mixer.Sound(
+            'assets/sounds/mixkit-retro-confirmation-tone-2860.wav')
 
         # messages
         self.FONT_DISPLAY_MESSAGE = pygame.font.SysFont(None, 200, bold=False)
@@ -38,6 +46,7 @@ class Azul:
         self.logic = Table()
         # self.logic.reset()
         obs = self.logic.get_observation()
+        self.isHumanPlayer = self.isHumanPlayer[:len(obs['player'])]
 
         self.screen = pygame.display.set_mode(SIZE_SCREEN)
         self.clock = pygame.time.Clock()
@@ -45,7 +54,7 @@ class Azul:
 
         # selected commands
         self.playLineIdx, self.playIsFirst, self.playMark, \
-            self.playNumMark, self.playFactoryIdx = None, None, None, None, None
+            self.playFactoryIdx = None, None, None, None
 
     def setup(self, obs):
 
@@ -60,10 +69,10 @@ class Azul:
 
         # position boards
         self.board = [
-            Board(f'Player {i+1}', b, (g + (g+x)*i + x/2, y), size=SIZE_BOARD, zoom=0.6) if i < p1
-            else (Board(f'Player {i+1}', b, (g + (g+x)*(i-1) + x/2 + w, y), size=SIZE_BOARD, zoom=0.6) if i > p1
-                  else Board(f'Player {i+1}', b, SIZE_BOARD / 2 + Vector2(g, g), size=SIZE_BOARD, zoom=1.0))
-            for i, b in enumerate(obs['player'])
+            Board(f'{"Human" if isHuman else "AI"} {i+1}', b, (g + (g+x)*i + x/2, y), size=SIZE_BOARD, zoom=0.6, isHuman=isHuman) if i < p1
+            else (Board(f'{"Human" if isHuman else "AI"} {i+1}', b, (g + (g+x)*(i-1) + x/2 + w, y), size=SIZE_BOARD, zoom=0.6, isHuman=isHuman) if i > p1
+                  else Board(f'{"Human" if isHuman else "AI"} {i+1}', b, SIZE_BOARD / 2 + Vector2(g, g), size=SIZE_BOARD, zoom=1.0, isHuman=isHuman))
+            for i, (b, isHuman) in enumerate(zip(obs['player'], self.isHumanPlayer))
         ]
         self.activeBoard = self.board[p1]
 
@@ -104,40 +113,51 @@ class Azul:
 
                 self.timeLastEvent = pygame.time.get_ticks()
 
+                # user clicked active board
                 if self.activeBoard.rect.collidepoint(event.pos):
                     playLineIdx = self.activeBoard.mouse_callback(event)
                     self.playLineIdx = playLineIdx if self.playLineIdx != playLineIdx else None
                     mouseHandled = True
                     continue
 
+                # user clicked center tiles
                 if self.center.rect.collidepoint(event.pos):
                     mouseHandled = True
-                    playMark, playNumMark, playIsFirst = \
+                    playMark, _, playIsFirst = \
                         self.center.mouse_callback(event)
-                    if self.playMark != playMark or self.playNumMark != playNumMark or self.playIsFirst != playIsFirst:
+                    if self.playMark != playMark or self.playIsFirst != playIsFirst:
                         self.playMark = playMark
-                        self.playNumMark = playNumMark
                         self.playIsFirst = playIsFirst
                     else:
-                        self.playMark = self.playNumMark = self.playIsFirst = None
+                        self.playMark = self.playIsFirst = None
 
                     self.playFactoryIdx = -1
                     continue
 
+                # user clicked a factory
                 for i, factory in enumerate(self.factory):
                     if factory.rect.collidepoint(event.pos):
                         mouseHandled = True
-                        playMark, playNumMark = factory.mouse_callback(event)
+                        playMark, _ = factory.mouse_callback(event)
                         playFactoryIdx = i
-                        if self.playMark != playMark or self.playNumMark != playNumMark \
-                                or self.playFactoryIdx != playFactoryIdx:
-                            self.playMark, self.playNumMark, self.playFactoryIdx = playMark, playNumMark, playFactoryIdx
+                        if self.playMark != playMark or self.playFactoryIdx != playFactoryIdx:
+                            self.playMark, self.playFactoryIdx = playMark, playFactoryIdx
                         else:
-                            self.playMark, self.playNumMark, self.playFactoryIdx = None, None, None
+                            self.playMark, self.playFactoryIdx = None, None
 
                         break
 
-        # and (self.playLineIdx is not None or self.playMark is not None):
+            elif event.type == AI_MOVE:
+                mouseHandled = True
+                self.helpMessage = f"Please wait for AI's turn"
+                self._draw()
+                pygame.time.delay(DELAY_AI_MOVE)
+                self.SOUND_AI_TURN.play()
+                self.playMark, self.playFactoryIdx, self.playLineIdx = \
+                    random_move(self.logic.get_observation())
+                self.helpMessage = f""
+
+        # play sound if valid click
         if mouseHandled:
             self.SOUND_SELECT.play()
             self.update_draw_ui()
@@ -168,6 +188,8 @@ class Azul:
 
         # return if move is not selected
         if (self.playLineIdx is None or self.playMark is None):
+            if not self.activeBoard.isHuman:
+                pygame.event.post(pygame.event.Event(AI_MOVE))
             return
         # return if move is invalid
         if not self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
@@ -184,19 +206,19 @@ class Azul:
         elif obs['roundIdx'] != self.obsOld['roundIdx']:  # new round
             # draw, add score, animate score, animate new round, sing song
             self.animate_new_round()
-
         else:  # next player
             self.animate_transition()
 
         self.setup(obs)
 
         # reset controls
-        self.playLineIdx, self.playIsFirst, self.playMark, self.playNumMark, self.playFactoryIdx = \
-            None, None, None, None, None
+        self.playLineIdx, self.playIsFirst, self.playMark, self.playFactoryIdx = \
+            None, None, None, None
 
     def animate_game_over(self):
         obs = self.logic.get_observation()
 
+        pygame.time.delay(DELAY_ANIMATION * 5)
         self.displayMessage = f"Game Over"
 
         for ip in range(len(self.board)):
@@ -207,7 +229,9 @@ class Azul:
             self.board[ip].set_score(
                 f"{self.obsOld['player'][ip]['score']} + {diffScore} = {obs['player'][ip]['score']}")
             self._draw()
-            pygame.time.delay(DELAY_ANIMATION * 5)
+            pygame.time.delay(DELAY_ANIMATION * 4)
+
+        pygame.time.delay(DELAY_ANIMATION * 2)
 
         allScores = [p['score'] for p in obs['player']]
         winnerIdx, _ = max(enumerate(allScores), key=lambda x: x[1])
@@ -215,27 +239,35 @@ class Azul:
         self.helpMessage = f"Click anywhere to quit"
         self._draw()
 
-        self.SOUND_OVER.play()
+        (self.SOUND_HUMAN_WIN if self.isHumanPlayer[winnerIdx] else self.SOUND_AI_WIN).play(
+        )
         self.wait_for_click()
         quit()
 
     def animate_new_round(self):
-        obs = self.logic.get_observation()
+        self.setup(self.obsOld)
+        obs = copy.deepcopy(self.logic.get_observation())
+
+        pygame.time.delay(DELAY_ANIMATION * 5)
 
         self.displayMessage = f"Round {obs['roundIdx'] + 1}"
-        self.helpMessage = f"Click anywhere to continue"
 
         for ip in range(len(self.board)):
             self.SOUND_SCORE.play()
+            self.board[ip].set_content(obs['player'][ip])
             # display old + new score
             diffScore = obs['player'][ip]['score'] - \
                 self.obsOld['player'][ip]['score']
             self.board[ip].set_score(
                 f"{self.obsOld['player'][ip]['score']} + {diffScore}")
             self._draw()
-            pygame.time.delay(DELAY_ANIMATION * 5)
+            # self.board[ip].set_score(obs['player'][ip]['score'])
+            pygame.time.delay(DELAY_ANIMATION * 4)
 
+        self.helpMessage = f"Click anywhere to continue"
+        self._draw()
         self.wait_for_click()
+        self.SOUND_SWITCH.play()
         self.displayMessage = f""
         self.helpMessage = f""
 
@@ -244,7 +276,7 @@ class Azul:
         obsNew = self.logic.get_observation()
         obsNew['activePlayer'] = self.obsOld['activePlayer']
 
-        for i in range(5):
+        for i in range(3):
             obs = self.obsOld if i % 2 else obsNew
             self.setup(obs)
             self._draw()
