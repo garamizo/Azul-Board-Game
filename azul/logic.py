@@ -23,7 +23,7 @@ class Board:
 
     def __init__(self):
         self.score = 0
-        self.grid = np.zeros([NUM_MARKS, NUM_MARKS])
+        self.grid = np.zeros([NUM_MARKS, NUM_MARKS], dtype=np.int)
         self.line = [[] for i in range(NUM_MARKS)]
         self.floor = []
 
@@ -118,7 +118,8 @@ class Board:
 
 
 class Table:
-    numPlayers = 4
+    numPlayers = 2
+
     activePlayer = 0
 
     def __init__(self):
@@ -131,7 +132,43 @@ class Table:
         self.reset()
 
         # full board ===========================
+        # p = 0
+        # self.player[p].grid = np.array([
+        #     [1, 0, 3, 0, 5],
+        #     [0, 1, 0, 3, 4],
+        #     [4, 0, 1, 0, 3],
+        #     [0, 4, 0, 1, 2],
+        #     [0, 3, 4, 0, 1]])
+        # self.player[p].line = [
+        #     [], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
+        # ]
+        # self.player[p].floor = [-1, 2, 4]
+        # self.player[p].score = 10
+
         # p = 1
+        # self.player[p].grid = np.array([
+        #     [1, 0, 3, 0, 5],
+        #     [0, 1, 0, 3, 4],
+        #     [4, 0, 1, 0, 3],
+        #     [0, 4, 0, 1, 2],
+        #     [0, 3, 4, 0, 1]])
+        # self.player[p].line = [
+        #     [], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
+        # ]
+        # self.player[p].floor = [-1, 2, 4]
+        # self.player[p].score = 10
+
+        # self.factory = [[]] * self.numFactories
+        # self.center = [4]*1 + [5]*1
+
+        # sim end of round ======================
+        # self.factory = [[]] * self.numFactories
+        # self.center = [-1] + [1]*2 + [2]*3 + [3]*2
+        # self.center = []
+
+        # sim end of game =======================
+        # p = 0
+        # self.factory = [[]] * self.numFactories
         # self.player[p].grid = np.array([
         #     [1, 2, 3, 4, 5],
         #     [0, 1, 0, 3, 4],
@@ -139,29 +176,10 @@ class Table:
         #     [0, 4, 0, 0, 2],
         #     [0, 3, 4, 0, 0]])
         # self.player[p].line = [
-        #     [1], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
+        #     [0], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
         # ]
         # self.player[p].floor = [-1, 2, 4]
         # self.player[p].score = 10
-        # self.center = [-1] + [1]*5 + [2]*5 + [3]*5
-
-        # sim end of round ======================
-        self.factory = [[]] * self.numFactories
-        self.center = [-1] + [1]*2 + [2]*3 + [3]*2
-
-        # sim end of game =======================
-        # self.factory = [[]] * self.numFactories
-        # self.player[2].grid = np.array([
-        #     [1, 2, 3, 4, 5],
-        #     [0, 1, 0, 3, 4],
-        #     [4, 0, 1, 0, 3],
-        #     [0, 4, 0, 0, 2],
-        #     [0, 3, 4, 0, 0]])
-        # self.player[2].line = [
-        #     [1], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
-        # ]
-        # self.player[2].floor = [-1, 2, 4]
-        # self.player[2].score = 10
         # self.center = [1]*2 + [2]*2 + [3]*2
 
     def reset(self):
@@ -209,28 +227,37 @@ class Table:
 
         if self.is_round_over():
             self.roundIdx += 1
+            isGameOver = self.is_game_over()
             # update score, get discards, find next first player
             for i, player in enumerate(self.player):
                 discardi = player.step_round()
                 if discardi.count(-1) > 0:
                     self.activePlayer = i
                 self.discard += discardi
+                if isGameOver:
+                    player.score = player.score_board()
 
             if not self.is_game_over():
                 self.discard.remove(-1)
                 self.reset()
 
     def get_observation(self):
+        # activePlayer, isGameOver
+        # rollout(obs, move) -> [] (return final score of each player)
+        #   is_valid(obs, move) -> bool
+        #   valid_moves(obs) -> []
+        #   update_valid_moves(obs, [moves], move) -> []
+        #   is_game_over(obs) -> bool
         obs = {
             'factory': self.factory,
             'center': self.center,
             'player': [],
             'activePlayer': self.activePlayer,
             'roundIdx': self.roundIdx,
-            'isGameOver': self.is_game_over() and self.is_round_over()
+            # 'isGameOver': self.is_game_over() and self.is_round_over()
         }
         obs['player'] = [
-            {'grid': self.player[i].grid,
+            {'grid': self.player[i].grid.tolist(),
              'line': self.player[i].line,
              'score': self.player[i].score,
              'floor': self.player[i].floor} for i in range(self.numPlayers)]
@@ -301,8 +328,9 @@ class Table:
         return False
 
 
-def valid_move(obs, playerIdx, factoryIdx, mark, row):
+def valid_move(obs, factoryIdx, mark, row):
     #
+    playerIdx = obs['activePlayer']
     player = obs['player'][playerIdx]
     factory = obs['factory'][factoryIdx] if factoryIdx >= 0 else obs['center']
     numMark = factory.count(mark)
@@ -319,6 +347,23 @@ def valid_move(obs, playerIdx, factoryIdx, mark, row):
         and (len(player['line'][row]) == 0 or player['line'][row][0] == mark)
         and np.all(player['grid'][row] != mark)
     )
+
+
+def is_game_over(state):
+    """
+        If game reached end of round ie. factories and center are empty
+        Does not consider other rounds
+    """
+    if len(state['center']) > 0:
+        return False
+    for factory in state['factory']:
+        if len(factory) > 0:
+            return False
+    for player in state['player']:
+        for g in player['grid']:
+            if g.count(0) == 0:
+                return True
+    return False
 
 
 def random_move(obs):

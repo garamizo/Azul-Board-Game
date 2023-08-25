@@ -2,13 +2,14 @@ import pygame
 from utils import load_sprite
 from models import GameObject, Board, Factory, Tile, Center
 from models import SIZE_SCREEN, SIZE_BOARD, SIZE_FACTORY, SIZE_TILE
-from models import BLACK, BEIGE, WHITE, YELLOW
+from models import BLACK, BEIGE, WHITE, YELLOW, RED
 from pygame.math import Vector2
-from logic import Table, random_move
-import copy
+from logic import Table, random_move, valid_move, is_game_over
+from copy import deepcopy
+from ai import MCTS_node
 
 DELAY_ANIMATION = 250
-DELAY_AI_MOVE = 1500
+DELAY_AI_MOVE = 3000
 AI_MOVE = pygame.USEREVENT + 1
 
 
@@ -35,7 +36,7 @@ class Azul:
         self.SOUND_HUMAN_WIN = pygame.mixer.Sound(
             'assets/sounds/mixkit-medieval-show-fanfare-announcement-226.wav')
         self.SOUND_AI_WIN = pygame.mixer.Sound(
-            'assets/sounds/mixkit-video-game-bomb-alert-2803.wav')
+            'assets/sounds/Bidibodi_bidibu_radio.mp3')
         self.SOUND_AI_TURN = pygame.mixer.Sound(
             'assets/sounds/mixkit-retro-confirmation-tone-2860.wav')
 
@@ -51,6 +52,10 @@ class Azul:
         self.screen = pygame.display.set_mode(SIZE_SCREEN)
         self.clock = pygame.time.Clock()
         self.setup(obs)
+
+        self.aiEngine = MCTS_node(
+            obs, agentIdx=self.isHumanPlayer.index(False))
+        # self.aiEngine.grow(timeout=1.0)
 
         # selected commands
         self.playLineIdx, self.playIsFirst, self.playMark, \
@@ -151,10 +156,22 @@ class Azul:
                 mouseHandled = True
                 self.helpMessage = f"Please wait for AI's turn"
                 self._draw()
-                pygame.time.delay(DELAY_AI_MOVE)
+                # pygame.time.delay(DELAY_AI_MOVE)
+
+                self.process_AI(DELAY_AI_MOVE/1000.0)
+                (self.playFactoryIdx, self.playMark, self.playLineIdx), actionIdx = \
+                    MCTS_node.get_best_action(self.aiEngine)
+                print(
+                    f"AI action: factoryIdx:{self.playFactoryIdx}, color:{self.playMark}, row:{self.playLineIdx}, numSims:{self.aiEngine.numRolls}, winRatio:{self.aiEngine.numWins/self.aiEngine.numRolls}")
+
+                self.aiEngine = self.aiEngine.child[actionIdx]
+                self.aiEngine.parent = None
+                # assert valid_move(obs, self.playFactoryIdx,
+                #                   self.playMark, self.playLineIdx), "Invalid move"
+
                 self.SOUND_AI_TURN.play()
-                self.playMark, self.playFactoryIdx, self.playLineIdx = \
-                    random_move(self.logic.get_observation())
+                # self.playMark, self.playFactoryIdx, self.playLineIdx = \
+                #     random_move(self.logic.get_observation())
                 self.helpMessage = f""
 
         # play sound if valid click
@@ -174,6 +191,21 @@ class Azul:
                 self.SOUND_WRONG.play()
                 print("Invalid move")
 
+    def process_AI(self, timeout):
+        obs = deepcopy(self.logic.get_observation())
+        nodeFound = MCTS_node.search_node(self.aiEngine, obs)
+        if nodeFound == None:
+            print(obs)
+            print(self.aiEngine.state)
+            print("New state not found. Creating new tree...")
+            self.aiEngine = MCTS_node(
+                obs, agentIdx=self.isHumanPlayer.index(False))
+        else:
+            self.aiEngine = nodeFound
+            self.aiEngine.parent = None
+
+        self.aiEngine.grow(timeout=timeout)
+
     def wait_for_click(self):
         while True:
             for event in pygame.event.get():
@@ -186,21 +218,24 @@ class Azul:
 
     def _process_game_logic(self):
 
-        # return if move is not selected
+        # move not selected yet
         if (self.playLineIdx is None or self.playMark is None):
+            # if active player is AI, trigger AI to pick move
             if not self.activeBoard.isHuman:
                 pygame.event.post(pygame.event.Event(AI_MOVE))
+            else:
+                self.process_AI(0.1)
             return
         # return if move is invalid
         if not self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
             return
 
-        self.obsOld = copy.deepcopy(self.logic.get_observation())
+        self.obsOld = deepcopy(self.logic.get_observation())
         self.logic.step_move(
             self.playMark, self.playFactoryIdx, self.playLineIdx)
 
         obs = self.logic.get_observation()
-        if obs['isGameOver']:  # end of game
+        if is_game_over(obs):  # obs['isGameOver']:  # end of game
             # draw, add score, animate score, animate winner, sing song, wait for quit
             self.animate_game_over()
         elif obs['roundIdx'] != self.obsOld['roundIdx']:  # new round
@@ -246,7 +281,7 @@ class Azul:
 
     def animate_new_round(self):
         self.setup(self.obsOld)
-        obs = copy.deepcopy(self.logic.get_observation())
+        obs = deepcopy(self.logic.get_observation())
 
         pygame.time.delay(DELAY_ANIMATION * 5)
 
@@ -259,9 +294,8 @@ class Azul:
             diffScore = obs['player'][ip]['score'] - \
                 self.obsOld['player'][ip]['score']
             self.board[ip].set_score(
-                f"{self.obsOld['player'][ip]['score']} + {diffScore}")
+                f"{self.obsOld['player'][ip]['score']} + {diffScore} = {obs['player'][ip]['score']}")
             self._draw()
-            # self.board[ip].set_score(obs['player'][ip]['score'])
             pygame.time.delay(DELAY_ANIMATION * 4)
 
         self.helpMessage = f"Click anywhere to continue"
@@ -286,10 +320,15 @@ class Azul:
         self.SOUND_SWITCH.play()
 
     def update_draw_ui(self):
+        color_select = RED
         # highlight selected player line
         if self.playLineIdx is not None:
-            pygame.draw.rect(self.screen, (255, 0, 0),
-                             self.activeBoard.rect_line[self.playLineIdx], width=3)
+            if self.playLineIdx == -1:
+                pygame.draw.rect(self.screen, color_select,
+                                 self.activeBoard.rect_floor, width=3)
+            else:
+                pygame.draw.rect(self.screen, color_select,
+                                 self.activeBoard.rect_line[self.playLineIdx], width=3)
 
         # highlight selected factory tiles
         if self.playFactoryIdx is not None:
@@ -298,10 +337,10 @@ class Azul:
 
             for content, tile in zip(factory.content, factory.tiles):
                 if content == self.playMark:
-                    pygame.draw.rect(self.screen, (255, 0, 0),
+                    pygame.draw.rect(self.screen, color_select,
                                      tile.rect, width=3)
             if self.playIsFirst:
-                pygame.draw.rect(self.screen, (255, 0, 0),
+                pygame.draw.rect(self.screen, color_select,
                                  factory.tiles[0].rect, width=3)
 
         imgMessage = self.FONT_DISPLAY_MESSAGE.render(
