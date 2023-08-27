@@ -1,15 +1,15 @@
 import pygame
-from utils import load_sprite
 from models import GameObject, Board, Factory, Tile, Center
 from models import SIZE_SCREEN, SIZE_BOARD, SIZE_FACTORY, SIZE_TILE
 from models import BLACK, BEIGE, WHITE, YELLOW, RED
 from pygame.math import Vector2
-from logic import Table, random_move, valid_move, is_game_over
+from logic import Table, is_game_over
 from copy import deepcopy
 from ai import MCTS_node
+from random import seed
 
 DELAY_ANIMATION = 250
-DELAY_AI_MOVE = 3000
+DELAY_AI_MOVE = 4000
 AI_MOVE = pygame.USEREVENT + 1
 
 
@@ -17,6 +17,7 @@ class Azul:
     isHumanPlayer = [True, False, False, False]
 
     def __init__(self):
+        # seed(1)
         self._init_pygame()
         pygame.mixer.init()
         self.timeLastEvent = 0
@@ -53,9 +54,8 @@ class Azul:
         self.clock = pygame.time.Clock()
         self.setup(obs)
 
-        self.aiEngine = MCTS_node(
-            obs, agentIdx=self.isHumanPlayer.index(False))
-        # self.aiEngine.grow(timeout=1.0)
+        self.aiEngine = MCTS_node(obs)
+        self.aiEngine.grow(timeout=5.0)
 
         # selected commands
         self.playLineIdx, self.playIsFirst, self.playMark, \
@@ -161,11 +161,12 @@ class Azul:
                 self.process_AI(DELAY_AI_MOVE/1000.0)
                 (self.playFactoryIdx, self.playMark, self.playLineIdx), actionIdx = \
                     MCTS_node.get_best_action(self.aiEngine)
-                print(
-                    f"AI action: factoryIdx:{self.playFactoryIdx}, color:{self.playMark}, row:{self.playLineIdx}, numSims:{self.aiEngine.numRolls}, winRatio:{self.aiEngine.numWins/self.aiEngine.numRolls}")
 
                 self.aiEngine = self.aiEngine.child[actionIdx]
                 self.aiEngine.parent = None
+
+                print(
+                    f"AI action: factoryIdx:{self.playFactoryIdx}, color:{self.playMark}, row:{self.playLineIdx}, numSims:{self.aiEngine.numRolls}, avgReward:{self.aiEngine.numWins/self.aiEngine.numRolls:.3}")
                 # assert valid_move(obs, self.playFactoryIdx,
                 #                   self.playMark, self.playLineIdx), "Invalid move"
 
@@ -184,7 +185,8 @@ class Azul:
 
             self.update_draw_ui()
             if self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
-                pygame.time.delay(100)
+                # pygame.time.delay(100)
+                self.delay(100 / 1000)
 
                 print("Switch player")
             else:
@@ -193,18 +195,22 @@ class Azul:
 
     def process_AI(self, timeout):
         obs = deepcopy(self.logic.get_observation())
-        nodeFound = MCTS_node.search_node(self.aiEngine, obs)
+        nodeFound = MCTS_node.search_node(
+            self.aiEngine, obs, maxDepth=self.logic.numPlayers)
         if nodeFound == None:
-            print(obs)
-            print(self.aiEngine.state)
+            # print(obs)
+            # print(self.aiEngine.state)
             print("New state not found. Creating new tree...")
-            self.aiEngine = MCTS_node(
-                obs, agentIdx=self.isHumanPlayer.index(False))
+            self.aiEngine = MCTS_node(obs)
+            self.aiEngine.grow(timeout=timeout * 4)
         else:
             self.aiEngine = nodeFound
             self.aiEngine.parent = None
+            self.aiEngine.grow(timeout=timeout)
 
-        self.aiEngine.grow(timeout=timeout)
+    def delay(self, secs):
+        # self.process_AI(secs)
+        pygame.time.delay(int(secs * 1000))
 
     def wait_for_click(self):
         while True:
@@ -283,7 +289,8 @@ class Azul:
         self.setup(self.obsOld)
         obs = deepcopy(self.logic.get_observation())
 
-        pygame.time.delay(DELAY_ANIMATION * 5)
+        # pygame.time.delay(DELAY_ANIMATION * 5)
+        self.delay(DELAY_ANIMATION * 5 / 1000)
 
         self.displayMessage = f"Round {obs['roundIdx'] + 1}"
 
@@ -296,7 +303,8 @@ class Azul:
             self.board[ip].set_score(
                 f"{self.obsOld['player'][ip]['score']} + {diffScore} = {obs['player'][ip]['score']}")
             self._draw()
-            pygame.time.delay(DELAY_ANIMATION * 4)
+            # pygame.time.delay(DELAY_ANIMATION * 4)
+            self.delay(DELAY_ANIMATION * 4 / 1000)
 
         self.helpMessage = f"Click anywhere to continue"
         self._draw()
@@ -314,9 +322,11 @@ class Azul:
             obs = self.obsOld if i % 2 else obsNew
             self.setup(obs)
             self._draw()
-            pygame.time.delay(DELAY_ANIMATION)
+            # pygame.time.delay(DELAY_ANIMATION)
+            self.delay(DELAY_ANIMATION / 1000)
 
-        pygame.time.delay(DELAY_ANIMATION)
+        # pygame.time.delay(DELAY_ANIMATION)
+        self.delay(DELAY_ANIMATION / 1000)
         self.SOUND_SWITCH.play()
 
     def update_draw_ui(self):

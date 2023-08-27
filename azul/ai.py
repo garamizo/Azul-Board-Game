@@ -1,128 +1,11 @@
+import numpy as np
 from time import time
 from math import log, sqrt
-from random import choice, shuffle, random
+from random import choice
 # from numba import njit
-from numpy import array
 from copy import deepcopy
-from logic import NUM_MARKS, NUM_LINES, NUM_FLOOR, PTS_PER_COL, PTS_PER_ROW, PTS_PER_SET
-
-import numpy as np
-
-# TODO Assume 2 player game
-GRID_PATTERN = [
-    [1, 2, 3, 4, 5],
-    [5, 1, 2, 3, 4],
-    [4, 5, 1, 2, 3],
-    [3, 4, 5, 1, 2],
-    [2, 3, 4, 5, 1]]
-FLOOR_PATTERN_CUM = [0, -1, -2, -4, -6, -8, -11, -14]
-
-
-def score_move(grid, row, col):
-
-    def count(rowDir, colDir):
-        for i in range(1, NUM_MARKS + 1):
-            r, c = row + i * rowDir, col + i * colDir
-            if (
-                r < 0
-                or c < 0
-                or r >= NUM_MARKS
-                or c >= NUM_MARKS
-                or grid[r][c] == 0
-            ):
-                return i-1
-
-    hpts = count(1, 0) + count(-1, 0) + 1
-    vpts = count(0, 1) + count(0, -1) + 1
-    pts = hpts + vpts
-    if hpts == 1 or vpts == 1:
-        pts -= 1
-
-    return pts
-
-
-def score_board(grid):
-    finalScore = 0
-    for i in range(NUM_MARKS):
-        if np.all(grid[i, :] != 0):
-            finalScore += PTS_PER_ROW
-        if np.all(grid[:, i] != 0):
-            finalScore += PTS_PER_COL
-        if np.sum(grid == i+1) == NUM_MARKS:
-            finalScore += PTS_PER_SET
-    return finalScore
-
-
-def is_terminal(state):
-    """
-        If game reached end of round ie. factories and center are empty
-        Does not consider other rounds
-    """
-    if len(state['center']) > 0:
-        return False
-    for factory in state['factory']:
-        if len(factory) > 0:
-            return False
-    return True
-
-
-def get_reward(obs):
-    """ given state, return [reward]*numPlayer for MC approach
-        Assume end of round ie. factories and center are empty, completed lines were cleared, score added
-        Modify obs
-    """
-    # probability of getting N tiles of a specific color in a round
-    probTile = {0: 1.0, 1: 0.8, 2: 0.6, 3: 0.4, 4: 0.3, 5: 0.2}
-
-    # rounds left == tiles remaining to complete a row
-    roundsLeft = min([min([g.count(0) for g in p['grid']])
-                     for p in obs['player']])
-
-    for p in obs['player']:
-
-        # update board from last round
-        for row, line in enumerate(p['line']):
-            # completed line
-            if len(line) == row+1:
-                color = line[0]
-                col = GRID_PATTERN[row].index(color)
-                p['grid'][row][col] = color
-                p['score'] += score_move(p['grid'], row, col)
-                p['line'][row] = []
-
-        # sub floor tiles, disregard 8th+ floor tiles, crop score if negative
-        p['score'] += FLOOR_PATTERN_CUM[min(7, len(p['floor']))]
-        if p['score'] < 0:
-            p['score'] = 0
-
-        # heuristics on state of grid and lines ==================
-        for i in range(roundsLeft):
-            for row in range(NUM_LINES):
-                # use remaining pieces on lines, only 1 color available
-                if len(p['line'][row]) > 0:
-                    tilesRemaining = row + 1 - len(p['line'][row])
-                    color = p['line'][row][0]
-                    if probTile[tilesRemaining] > random():
-                        col = GRID_PATTERN[row].index(color)
-                        p['score'] += score_move(p['grid'], row, col)
-                        p['grid'][row][col] = color
-                        p['line'][row] = []
-                    # force completion on next round
-                    else:
-                        p['line'][row] = [color] * (row + 1)
-                else:
-                    colors = [GRID_PATTERN[row][col]
-                              for col, g in enumerate(p['grid'][row]) if g == 0]
-
-                    if len(colors) > 0 and (1 - probTile[row + 1])**len(colors) < random():
-                        color = choice(colors)
-                        col = GRID_PATTERN[row].index(color)
-                        p['score'] += score_move(p['grid'], row, col)
-                        p['grid'][row][col] = color
-
-        p['score'] += score_board(np.array(p['grid'], dtype=np.int))
-
-    return [p['score'] for p in obs['player']]
+from logic import is_terminal, get_reward_simple, get_action_space, play, get_reward
+# from azul.tictactoe import is_terminal, get_reward_simple, get_action_space, play, get_reward, REWARD_SUM_MAX
 
 
 def get_winner(reward):
@@ -133,65 +16,98 @@ def get_winner(reward):
         return choice([i for i, val in enumerate(reward) if val == maxPts])
 
 
-def get_action_space(state):
+def maxn(state, depth, alpha):
+    currentPlayer = state['activePlayer']
+    if is_terminal(state) or depth <= 0:
+        return get_reward(state), None
+
+    best = [-np.Inf] * state['numPlayers']
+    actionBest = None
+    for action in get_action_space(state):
+        stateNew = deepcopy(state)
+        play(stateNew, action)
+        result, _ = maxn(stateNew, depth-1, best[currentPlayer])
+
+        if result[currentPlayer] > best[currentPlayer]:
+            best, actionBest = result, action
+
+        if result[currentPlayer] >= REWARD_SUM_MAX - alpha:
+            return result, actionBest
+    return best, actionBest
+
+
+def paranoid(state, depth, alpha, beta, rootPlayer):
+    activePlayer = state['activePlayer']
+    if is_terminal(state) or depth <= 0:
+        reward = get_reward(state)[activePlayer]
+        return (1 if activePlayer == rootPlayer else -1) * reward, None
+
+    actionBest = None
+    for action in get_action_space(state):
+        stateNew = deepcopy(state)
+        play(stateNew, action)
+        if activePlayer == rootPlayer or stateNew['activePlayer'] == rootPlayer:
+            reward = -paranoid(stateNew, depth-1, -beta, -alpha, rootPlayer)[0]
+        else:
+            reward = paranoid(stateNew, depth-1, alpha, beta, rootPlayer)[0]
+
+        if reward > alpha:
+            alpha = reward
+            actionBest = action
+
+        if alpha >= beta:
+            return beta, actionBest
+
+    return alpha, actionBest
+
+
+def negamax(state, currentPlayer, depth, playerMaxIdx):
     """
-        Return:
-            ~List of dict [{'factoryIdx': 0, 'colorIdx': 0, 'row': 0}]~
-            List of list
+        2 player negamax
+            depth
+            currentPlayer: -1 or 1
     """
-    player = state['player'][state['activePlayer']]
-    actions = []
+    if is_terminal(state) or depth <= 0:
+        winnerIdx = get_winner(get_reward_simple(deepcopy(state)))
+        return currentPlayer if playerMaxIdx == winnerIdx else -currentPlayer, None
+        # return currentPlayer, None
 
-    for factoryIdx, factory in enumerate([state['center']] + state['factory']):
-        for color in range(1, NUM_MARKS + 1):
-            if color in factory:
-                actions.append([factoryIdx-1, color, -1])
+    valMax, actionMax = -np.Inf, None
+    for action in get_action_space(state):
+        stateNew = deepcopy(state)
+        play(stateNew, action)
+        val = -negamax(stateNew, -currentPlayer, depth-1, playerMaxIdx)[0]
+        if val >= valMax:
+            valMax = val
+            actionMax = action
 
-                for r, (gridR, lineR) in enumerate(zip(player['grid'], player['line'])):
-                    if (0 < len(lineR) <= r and color in lineR) or (len(lineR) == 0 and color not in gridR):
-                        actions.append([factoryIdx-1, color, r])
-    return actions
+    return valMax, actionMax
 
 
-def play(state, action):
-    """"
-        Update game state given action
-        Does not update score
-        No returns
+def alphabeta(state, currentPlayer, depth, alpha, beta, playerMaxIdx):
     """
-    factoryIdx, mark, row = action
-    factory = state['factory'][factoryIdx] if factoryIdx >= 0 else state['center']
-    player = state['player'][state['activePlayer']]
-    numMark = factory.count(mark)
-    numPlayer = len(state['player'])
+        2 player negamax
+            depth
+            currentPlayer: -1 or 1
+    """
+    if is_terminal(state) or depth <= 0:
+        winnerIdx = get_winner(get_reward_simple(deepcopy(state)))
+        return currentPlayer if playerMaxIdx == winnerIdx else -currentPlayer, None
 
-    isFirst = factory.count(-1) > 0
+    actionMax = None
+    for action in get_action_space(state):
+        stateNew = deepcopy(state)
+        play(stateNew, action)
+        val = -alphabeta(stateNew, -currentPlayer, depth -
+                         1, -beta, -alpha, playerMaxIdx)[0]
+        if val > alpha:
+            alpha = val
+            actionMax = action
 
-    # update factory tiles
-    for _ in range(numMark):
-        factory.remove(mark)
-    if isFirst:
-        factory.remove(-1)
-    elif factoryIdx >= 0:
-        state['center'] += factory
-        factory.clear()
+        if alpha >= beta:
+            return beta, None
 
-    state['activePlayer'] = (state['activePlayer'] + 1) % numPlayer
-
-    # update player board
-    if isFirst:
-        player['floor'].append(-1)
-    if row == -1:
-        player['floor'] += [mark] * numMark
-        return
-
-    # transfer to lines, and possibly to floor
-    dropPieces = numMark + len(player['line'][row]) - row - 1
-    if dropPieces > 0:
-        player['line'][row] = [mark] * (row + 1)
-        player['floor'] += [mark] * dropPieces
-    else:
-        player['line'][row] += [mark] * numMark
+    return alpha, actionMax
 
 
 def get_random_action(state):
@@ -206,7 +122,7 @@ class MCTS_node:
     """
     c = sqrt(2)
 
-    def __init__(self, state, agentIdx, parent=None):
+    def __init__(self, state, parent=None):
         """
             parent: tree parent
             action: player action ie. "move" from self to child
@@ -216,11 +132,10 @@ class MCTS_node:
         # TODO mark not necessary. Implied by board and action
 
         self.parent = parent
-        self.state = state    # state after action, list
-        self.agentIdx = agentIdx
+        self.state = state
 
         self.numRolls = 0  # num of sims spamming from current node
-        self.numWins = 0  # num of wins for parent mark (ie num of losses)
+        self.numWins = 0  # num of wins for parent
 
         if is_terminal(state):
             self.child, self.action = None, None
@@ -246,16 +161,13 @@ class MCTS_node:
                 return node, None
 
         # pick one unexplored child randomly
-        action = choice(
-            [a for n, a in zip(node.child, node.action) if n is None])
-        return node, action
+        actionIdx = choice([i for i, n in enumerate(node.child) if n is None])
+        return node, actionIdx
 
-    def expand(self, action):
+    def expand(self, actionIdx):
         stateNew = deepcopy(self.state)
-        play(stateNew, action)
-        actionIdx = self.action.index(action)
-        self.child[actionIdx] = MCTS_node(stateNew, self.agentIdx, self)
-        return self.child[actionIdx]
+        play(stateNew, self.action[actionIdx])
+        self.child[actionIdx] = MCTS_node(stateNew, self)
 
     def rollout(self):
         """
@@ -271,14 +183,14 @@ class MCTS_node:
 
         return get_reward(state)  # call will overwrite 'state'
 
-    def backpropagate(self, winner):
+    def backpropagate(self, rewards):
         # transverse tree to the root, updating win stats
         node = self
-        while node.parent is not None:
+        while node.parent is not None:  # until the root
             node.numRolls += 1
-            if node.parent.state['activePlayer'] == winner:
-                # if node.agentIdx == winner:
-                node.numWins += 1
+            node.numWins += rewards[node.parent.state['activePlayer']]
+            # if node.parent.state['activePlayer'] == winner:
+            #     node.numWins += 1
             node = node.parent
         node.numRolls += 1  # update numSims of root
 
@@ -292,14 +204,15 @@ class MCTS_node:
 
         # grow tree in alloted time
         while time() < startTime + timeout:
-            node, action = self.select_leaf()
-            if not node.child == None:  # not terminal
-                node = node.expand(action)
+            node, leafIdx = self.select_leaf()
+            if node.child is not None:  # not terminal
+                node.expand(leafIdx)
+                node = node.child[leafIdx]
             reward = node.rollout()
-            node.backpropagate(get_winner(reward))
+            node.backpropagate(reward)
 
     @staticmethod
-    def search_node(root, state, maxDepth=2):
+    def search_node(root, state, maxDepth=3):
         # search with limited depth
         if root.state == state:
             return root
@@ -332,23 +245,6 @@ class MCTS_node:
                 if n is not None:
                     print(
                         f"\t{a}\t{n.eval():.2f}\t{n.numWins/n.numRolls:.3f}\t{n.numRolls}")
-
-
-# convert state object to list
-def state_object_to_list(obs):
-    # activePlayer = obs['activePlayer']
-    # center = obs['center']
-    # factory = obs['factory']
-    # player = []
-    # for p in obs['player']:
-    #     score = p['score']
-    #     grid = p['grid']
-    #     line = p['line']
-    #     floor = p['floor']
-    #     player.append([score, grid, line, floor])
-
-    # return [activePlayer, center, factory, player]
-    return obs
 
 
 # def agent_uct(obs):
