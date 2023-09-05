@@ -3,10 +3,11 @@ from models import GameObject, Board, Factory, Tile, Center
 from models import SIZE_SCREEN, SIZE_BOARD, SIZE_FACTORY, SIZE_TILE
 from models import BLACK, BEIGE, WHITE, YELLOW, RED
 from pygame.math import Vector2
-from logic import Table, is_game_over
+from logic import Table, print_state
 from copy import deepcopy
 from ai import MCTS_node
 from random import seed
+from tqdm import tqdm
 
 DELAY_ANIMATION = 250
 DELAY_AI_MOVE = 4000
@@ -53,9 +54,9 @@ class Azul:
         self.screen = pygame.display.set_mode(SIZE_SCREEN)
         self.clock = pygame.time.Clock()
         self.setup(obs)
+        print(obs)
 
-        self.aiEngine = MCTS_node(obs)
-        self.aiEngine.grow(timeout=5.0)
+        self.aiEngine = MCTS_node(deepcopy(obs))
 
         # selected commands
         self.playLineIdx, self.playIsFirst, self.playMark, \
@@ -98,9 +99,9 @@ class Azul:
     def main_loop(self):
         while True:
             self._handle_input()
-            # if pygame.time.get_ticks() - self.timeLastEvent > 500:
             self._process_game_logic()
             self._draw()
+            self.aiEngine.grow_while(0.1, maxRolls=50_000)
 
     def _init_pygame(self):
         pygame.init()
@@ -156,23 +157,26 @@ class Azul:
                 mouseHandled = True
                 self.helpMessage = f"Please wait for AI's turn"
                 self._draw()
-                # pygame.time.delay(DELAY_AI_MOVE)
 
-                self.process_AI(DELAY_AI_MOVE/1000.0)
-                (self.playFactoryIdx, self.playMark, self.playLineIdx), actionIdx = \
-                    MCTS_node.get_best_action(self.aiEngine)
+                t0 = pygame.time.get_ticks()
+                MIN_ROLLS, rolls = 1300, 0
+                with tqdm(total=MIN_ROLLS) as pbar:
+                    while rolls < MIN_ROLLS and pygame.time.get_ticks() - t0 < 10_000:
+                        self.process_AI(2)
+                        (self.playFactoryIdx, self.playMark, self.playLineIdx), actionIdx = \
+                            MCTS_node.get_best_action(self.aiEngine)
+                        pbar.update(
+                            self.aiEngine.child[actionIdx].numRolls - rolls)
+                        rolls = self.aiEngine.child[actionIdx].numRolls
 
-                self.aiEngine = self.aiEngine.child[actionIdx]
-                self.aiEngine.parent = None
-
-                print(
-                    f"AI action: factoryIdx:{self.playFactoryIdx}, color:{self.playMark}, row:{self.playLineIdx}, numSims:{self.aiEngine.numRolls}, avgReward:{self.aiEngine.numWins/self.aiEngine.numRolls:.3}")
-                # assert valid_move(obs, self.playFactoryIdx,
-                #                   self.playMark, self.playLineIdx), "Invalid move"
+                node = self.aiEngine.child[actionIdx]
+                print((f"AI {self.aiEngine.state['activePlayer'] + 1} action:"
+                       f"factoryIdx: {self.playFactoryIdx}, "
+                       f"color: {self.playMark}, row: {self.playLineIdx}, "
+                       f"numSims: {node.numRolls}, "
+                       f"avgReward: {node.numWins/node.numRolls: .3}"))
 
                 self.SOUND_AI_TURN.play()
-                # self.playMark, self.playFactoryIdx, self.playLineIdx = \
-                #     random_move(self.logic.get_observation())
                 self.helpMessage = f""
 
         # play sound if valid click
@@ -187,33 +191,31 @@ class Azul:
             if self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
                 # pygame.time.delay(100)
                 self.delay(100 / 1000)
-
-                print("Switch player")
             else:
                 self.SOUND_WRONG.play()
                 print("Invalid move")
 
     def process_AI(self, timeout):
-        obs = deepcopy(self.logic.get_observation())
+
+        obs = self.logic.get_observation()
         nodeFound = MCTS_node.search_node(
             self.aiEngine, obs, maxDepth=self.logic.numPlayers)
+
         if nodeFound == None:
-            # print(obs)
-            # print(self.aiEngine.state)
             print("New state not found. Creating new tree...")
             self.aiEngine = MCTS_node(obs)
-            self.aiEngine.grow(timeout=timeout * 4)
         else:
             self.aiEngine = nodeFound
             self.aiEngine.parent = None
-            self.aiEngine.grow(timeout=timeout)
+        self.aiEngine.grow_while(timeout=timeout, maxRolls=50_000)
 
     def delay(self, secs):
-        # self.process_AI(secs)
-        pygame.time.delay(int(secs * 1000))
+        self.process_AI(secs)
+        # pygame.time.delay(int(secs * 1000))
 
     def wait_for_click(self):
         while True:
+            self.aiEngine.grow_while(0.1, maxRolls=50_000)
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (
                     event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
@@ -229,24 +231,29 @@ class Azul:
             # if active player is AI, trigger AI to pick move
             if not self.activeBoard.isHuman:
                 pygame.event.post(pygame.event.Event(AI_MOVE))
-            else:
-                self.process_AI(0.1)
             return
         # return if move is invalid
         if not self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
             return
 
         self.obsOld = deepcopy(self.logic.get_observation())
+        if self.activeBoard.isHuman:
+            print((f"Human {self.obsOld['activePlayer'] + 1} action:"
+                   f"factoryIdx: {self.playFactoryIdx}, "
+                   f"color: {self.playMark}, row: {self.playLineIdx}"))
+
         self.logic.step_move(
             self.playMark, self.playFactoryIdx, self.playLineIdx)
 
         obs = self.logic.get_observation()
-        if is_game_over(obs):  # obs['isGameOver']:  # end of game
+        if self.logic.is_game_over():  # obs['isGameOver']:  # end of game
             # draw, add score, animate score, animate winner, sing song, wait for quit
             self.animate_game_over()
+            print(obs)
         elif obs['roundIdx'] != self.obsOld['roundIdx']:  # new round
             # draw, add score, animate score, animate new round, sing song
             self.animate_new_round()
+            print(obs)
         else:  # next player
             self.animate_transition()
 
@@ -350,8 +357,12 @@ class Azul:
                     pygame.draw.rect(self.screen, color_select,
                                      tile.rect, width=3)
             if self.playIsFirst:
-                pygame.draw.rect(self.screen, color_select,
-                                 factory.tiles[0].rect, width=3)
+                try:
+                    pygame.draw.rect(self.screen, color_select,
+                                     factory.tiles[0].rect, width=3)
+                except IndexError:
+                    print_state(self.logic.get_observation())
+                    quit()
 
         imgMessage = self.FONT_DISPLAY_MESSAGE.render(
             self.displayMessage, True, YELLOW, BLACK)

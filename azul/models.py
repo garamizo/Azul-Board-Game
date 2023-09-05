@@ -118,7 +118,7 @@ class Board(GameObject):
                     lineIdx = i
                     break
 
-        print(f"Board: {lineIdx=}")
+        # print(f"Board: {lineIdx=}")
         return lineIdx
 
 
@@ -182,7 +182,7 @@ class Factory(GameObject):
             mark = self.content[tileIdx]
             numMark = self.content.count(mark)
 
-        print(f"Factory: {mark=}, {numMark=}")
+        # print(f"Factory: {mark=}, {numMark=}")
         return mark, numMark
 
 
@@ -228,5 +228,5 @@ class Center(GameObject):
                 mark = self.content[tileIdx]
                 numMark = self.content.count(mark)
 
-        print(f"Center: {mark=}, {numMark=}, {isFirst=}")
+        # print(f"Center: {mark=}, {numMark=}, {isFirst=}")
         return mark, numMark, isFirst

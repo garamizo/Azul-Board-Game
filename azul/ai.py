@@ -3,8 +3,13 @@ from time import time
 from math import log, sqrt
 from random import choice
 # from numba import njit
-from copy import deepcopy
-from logic import is_terminal, get_reward_simple, get_action_space, play, get_reward
+try:
+    # from utils import deepcopy
+    from logic import is_terminal, get_reward_simple, get_action_space, play, get_reward, deepcopy
+except ModuleNotFoundError:
+    from azul.logic import is_terminal, get_reward_simple, get_action_space, play, get_reward, deepcopy
+    # from azul.utils import deepcopy
+
 # from azul.tictactoe import is_terminal, get_reward_simple, get_action_space, play, get_reward, REWARD_SUM_MAX
 
 
@@ -189,8 +194,6 @@ class MCTS_node:
         while node.parent is not None:  # until the root
             node.numRolls += 1
             node.numWins += rewards[node.parent.state['activePlayer']]
-            # if node.parent.state['activePlayer'] == winner:
-            #     node.numWins += 1
             node = node.parent
         node.numRolls += 1  # update numSims of root
 
@@ -198,18 +201,23 @@ class MCTS_node:
         return self.numWins / self.numRolls + \
             MCTS_node.c * sqrt(log(self.parent.numRolls) / self.numRolls)
 
-    def grow(self, timeout=2.0, startTime=None):
+    def grow(self):
+        node, leafIdx = self.select_leaf()
+        if node.child is not None:  # not terminal
+            node.expand(leafIdx)
+            node = node.child[leafIdx]
+        reward = node.rollout()
+        node.backpropagate(reward)
+
+    def grow_while(self, timeout=2.0, maxRolls=1_000_000, startTime=None):
         if startTime is None:
             startTime = time()
 
         # grow tree in alloted time
+        while time() < startTime + timeout and self.numRolls <= maxRolls:
+            self.grow()
         while time() < startTime + timeout:
-            node, leafIdx = self.select_leaf()
-            if node.child is not None:  # not terminal
-                node.expand(leafIdx)
-                node = node.child[leafIdx]
-            reward = node.rollout()
-            node.backpropagate(reward)
+            pass
 
     @staticmethod
     def search_node(root, state, maxDepth=3):

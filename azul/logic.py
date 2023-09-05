@@ -1,8 +1,12 @@
 import numpy as np
-from copy import deepcopy
-from random import choice, shuffle, random
-from copy import deepcopy, copy
 
+from random import choice, shuffle, random
+# from numba import njit
+# try:
+#     from utils import deepcopy
+# except ModuleNotFoundError:
+#     from azul.utils import deepcopy
+# from copy import deepcopy
 
 NUM_LINES = 5
 NUM_COLORS = 5
@@ -63,7 +67,6 @@ class Board:
         for row, line in enumerate(self.line):
             if len(line) == row+1:
                 mark = line[0]
-                # col = np.where(GRID_PATTERN[row] == mark)[0]
                 col = GRID_PATTERN[row].index(mark)
                 self.grid[row, col] = mark
                 self.score += score_move(self.grid, row, col)
@@ -126,7 +129,7 @@ class Board:
 
 class Table:
     numPlayers = 4
-    activePlayer = 1
+    activePlayer = 0
 
     def __init__(self):
         self.bag = np.random.permutation(
@@ -180,10 +183,10 @@ class Table:
         #     [1, 2, 3, 4, 5],
         #     [0, 1, 0, 3, 4],
         #     [4, 0, 1, 0, 3],
-        #     [0, 4, 0, 0, 2],
+        #     [0, 4, 0, 1, 2],
         #     [0, 3, 4, 0, 0]])
         # self.player[p].line = [
-        #     [0], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
+        #     [], [2, 2], [5, 5], [], [1, 1, 1, 1, 1]
         # ]
         # self.player[p].floor = [-1, 2, 4]
         # self.player[p].score = 10
@@ -235,18 +238,22 @@ class Table:
         self.activePlayer = (self.activePlayer + 1) % self.numPlayers
 
         if self.is_round_over():
+            print("--- Round over")
             self.roundIdx += 1
-            isGameOver = self.is_game_over()
+
             # update score, get discards, find next first player
             for i, player in enumerate(self.player):
                 discardi = player.step_round()
                 if discardi.count(-1) > 0:
                     self.activePlayer = i
                 self.discard += discardi
-                if isGameOver:
-                    player.score = player.score_board()
 
-            if not self.is_game_over():
+            if self.is_game_over():
+                print("--- Game over")
+                for i, player in enumerate(self.player):
+                    print(f"Player {i} scores {player.score_board()}")
+                    player.score = player.score_board()
+            else:
                 # self.discard.remove(-1)
                 self.reset()
 
@@ -330,31 +337,12 @@ class Table:
 
     def is_game_over(self):
         # call after is_round_over, true if a player has a completed row
+        if self.is_round_over() == False:
+            return False
         for player in self.player:
             if np.any(np.all(player.grid != 0, 1)):
                 return True
         return False
-
-
-# def valid_move(obs, factoryIdx, mark, row):
-#     #
-#     playerIdx = obs['activePlayer']
-#     player = obs['player'][playerIdx]
-#     factory = obs['factory'][factoryIdx] if factoryIdx >= 0 else obs['center']
-#     numMark = factory.count(mark)
-
-#     # valid for factory
-#     if numMark == 0:
-#         return False
-
-#     # valid for player
-#     if row == -1:
-#         return True
-#     return (
-#         len(player['line'][row]) <= row
-#         and (len(player['line'][row]) == 0 or player['line'][row][0] == mark)
-#         and np.all(player['grid'][row] != mark)
-#     )
 
 
 def is_game_over(state):
@@ -398,15 +386,28 @@ def score_move(grid, row, col):
 
 
 def score_board(grid):
-    grid = np.array(grid)
+    """
+        Calc additional score from grid patterns
+    """
     finalScore = 0
-    for i in range(NUM_COLORS):
-        if np.all(grid[i, :] != 0):
+    zVertCount = [0] * NUM_COLORS
+    cCount = [0] * NUM_COLORS
+    for gRow in grid:
+        if gRow.count(0) == 0:
             finalScore += PTS_PER_ROW
-        if np.all(grid[:, i] != 0):
+
+        for i in range(NUM_COLORS):
+            if gRow[i] != 0:
+                zVertCount[i] += 1
+            if i in gRow:
+                cCount[i] += 1
+
+    for i in range(NUM_COLORS):
+        if zVertCount[i] >= NUM_COLORS:
             finalScore += PTS_PER_COL
-        if np.sum(grid == i+1) == NUM_COLORS:
+        if cCount[i] >= NUM_COLORS:
             finalScore += PTS_PER_SET
+
     return finalScore
 
 
@@ -414,6 +415,7 @@ def is_terminal(state):
     """
         If game reached end of round ie. factories and center are empty
         Does not consider other rounds
+        Use internally
     """
     if len(state['center']) > 0:
         return False
@@ -423,16 +425,7 @@ def is_terminal(state):
     return True
 
 
-def is_game_over(state):
-    # call after is_round_over, true if a player has a completed row
-    for player in state['player']:
-        for gridRow in player['grid']:
-            if gridRow.count(0) == 0:
-                return True
-    return False
-
-
-def get_reward(obs):
+def get_reward2(obs):
     """ given state, return [reward]*numPlayer for MC approach
         Assume end of round ie. factories and center are empty, completed lines were cleared, score added
         Modify obs
@@ -446,6 +439,7 @@ def get_reward(obs):
                      for p in obs['player']])
 
     for p in obs['player']:
+        firstAdvantage = 7 / 9 if -1 in p['floor'] else 1
 
         # update board from last round
         for row, line in enumerate(p['line']):
@@ -469,7 +463,7 @@ def get_reward(obs):
                 if len(p['line'][row]) > 0:
                     tilesRemaining = row + 1 - len(p['line'][row])
                     color = p['line'][row][0]
-                    if probTile[tilesRemaining] > random():
+                    if probTile[tilesRemaining] > random() * firstAdvantage:
                         col = GRID_PATTERN[row].index(color)
                         p['score'] += score_move(p['grid'], row, col)
                         p['grid'][row][col] = color
@@ -481,16 +475,25 @@ def get_reward(obs):
                     colors = [GRID_PATTERN[row][col]
                               for col, g in enumerate(p['grid'][row]) if g == 0]
 
-                    if len(colors) > 0 and (1 - probTile[row + 1])**len(colors) < random():
+                    if len(colors) > 0 and (1 - probTile[row + 1])**len(colors) < random() / firstAdvantage:
                         color = choice(colors)
                         col = GRID_PATTERN[row].index(color)
                         p['score'] += score_move(p['grid'], row, col)
                         p['grid'][row][col] = color
 
-        p['score'] += score_board(np.array(p['grid'], dtype=np.int))
+            firstAdvantage = 1
+        p['score'] += score_board(p['grid'])
 
-    rewards = [p['score'] for p in obs['player']]
-    return [r / (sum(rewards) + 1) for r in rewards]
+    scores = [p['score'] for p in obs['player']]
+    # allow too high scores, including letting me win
+    # return [1 + (r - max(scores)) / (1 + max(scores)) for r in scores]
+    # player losing badly loses motivation and plays randomly
+    return [1 if s == max(scores) else 0 for s in scores]
+    # still low motivation, but better
+    # return [1 if s == max(scores) else 0.1*s/(max(scores) + 1) for s in scores]
+    # return [1 if s == max(scores) else 0.1*s/(max(scores) + 1) for s in scores]
+    # return [r / (sum(scores) + 1) for r in scores]
+    # return rewards
 
 
 def is_valid_action(state, action):
@@ -518,24 +521,8 @@ def is_valid_action(state, action):
     )
 
 
-def get_reward_deterministic(obs):
-    """ given state, return [reward]*numPlayer for MC approach
-        Assume end of round ie. factories and center are empty, completed lines were cleared, score added
-        Modify obs
-        Deterministic
-    """
-    # rounds left == tiles remaining to complete a row
-    roundsLeft = min([min([g.count(0) for g in p['grid']])
-                     for p in obs['player']])
-
-    # weight function for collumn and set scoring
-    wCol = [1/15, 2/15, 3/15, 4/15, 5/15]
-    # dict weight for missing tiles to complete row
-    rCol = {i: (roundsLeft/(roundsLeft + i) if i <= roundsLeft else 0)
-            for i in range(NUM_COLORS)}
-
+def score_round(obs):
     for p in obs['player']:
-
         # update board from last round
         for row, line in enumerate(p['line']):
             # completed line
@@ -550,35 +537,62 @@ def get_reward_deterministic(obs):
         p['score'] += FLOOR_PATTERN_CUM[min(7, len(p['floor']))]
         if p['score'] < 0:
             p['score'] = 0
+        p['score'] += score_board(p['grid'])
+    return obs
 
-        # heuristics on state of grid and lines ==================
-        for i in range(roundsLeft):
-            for row in range(NUM_LINES):
-                # use remaining pieces on lines, only 1 color available
-                if len(p['line'][row]) > 0:
-                    tilesRemaining = row + 1 - len(p['line'][row])
-                    color = p['line'][row][0]
-                    if probTile[tilesRemaining] > random():
-                        col = GRID_PATTERN[row].index(color)
-                        p['score'] += score_move(p['grid'], row, col)
-                        p['grid'][row][col] = color
-                        p['line'][row] = []
-                    # force completion on next round
-                    else:
-                        p['line'][row] = [color] * (row + 1)
-                else:
-                    colors = [GRID_PATTERN[row][col]
-                              for col, g in enumerate(p['grid'][row]) if g == 0]
 
-                    if len(colors) > 0 and (1 - probTile[row + 1])**len(colors) < random():
-                        color = choice(colors)
-                        col = GRID_PATTERN[row].index(color)
-                        p['score'] += score_move(p['grid'], row, col)
-                        p['grid'][row][col] = color
+def get_reward(obs):
+    """ given state, return [reward]*numPlayer for MC approach
+        Assume end of round ie. factories and center are empty, completed lines were cleared, score added
+        Modify obs
+        Stochastic
+    """
+    # tiles remaining to complete a row
+    obs = score_round(obs)
+    # print_state(obs)
 
-        p['score'] += score_board(np.array(p['grid'], dtype=np.int))
+    DISCOUNT = 1.0
+    roundsLeft = min([min([g.count(0) for g in p['grid']])
+                     for p in obs['player']])
+    # print(f"{roundsLeft=}")
 
-    return [p['score'] for p in obs['player']]
+    if roundsLeft > 0:
+        for p in obs['player']:
+            # heuristics on state of grid and lines ==================
+            vertCount = [0] * NUM_COLORS  # tile count per column
+            cCount = [0] * NUM_COLORS  # tile count per color
+            tCount = 0  # total tile count
+            for gRow in p['grid']:
+                horzCount = NUM_COLORS - gRow.count(0)
+                if horzCount + roundsLeft >= NUM_COLORS:
+                    p['score'] += PTS_PER_ROW * \
+                        DISCOUNT * horzCount / NUM_COLORS
+
+                for i in range(NUM_COLORS):
+                    if gRow[i] != 0:
+                        vertCount[i] += 1
+                        tCount += 1
+                    if i in gRow:
+                        cCount[i] += 1
+
+            p['score'] += tCount * 2 * DISCOUNT
+            for i in range(NUM_COLORS):
+                p['score'] += PTS_PER_COL * DISCOUNT * \
+                    (vertCount[i] / NUM_COLORS) * (roundsLeft / NUM_COLORS)
+                p['score'] += PTS_PER_SET * DISCOUNT * \
+                    (cCount[i] / NUM_COLORS) * (roundsLeft / NUM_COLORS)
+
+    scores = [p['score'] for p in obs['player']]
+    # allow too high scores, including letting me win
+    # return [1 + (r - max(scores)) / (1 + max(scores)) for r in scores]
+    # player losing badly loses motivation and plays randomly
+    # return [1 if s == max(scores) else 0 for s in scores]
+    # still low motivation, but better
+    # return [1 if s == max(scores) else 0.1*s/(max(scores) + 1) for s in scores]
+    return [(s == max(scores)) + s/1_000 for s in scores]
+    # return [1 if s == max(scores) else 0.1*s/(max(scores) + 1) for s in scores]
+    # return [r / (sum(scores) + 1) for r in scores]
+    # return scores
 
 
 def get_reward_simple(obs):
@@ -607,7 +621,7 @@ def get_reward_simple(obs):
                 p['score'] += score_move(p['grid'], row, col)
                 p['line'][row] = []
 
-        p['score'] += score_board(np.array(p['grid'], int))
+        p['score'] += score_board(np['grid'])
 
         # sub floor tiles, disregard 8th+ floor tiles, crop score if negative
         p['score'] += FLOOR_PATTERN_CUM[min(7, len(p['floor']))]
@@ -646,16 +660,21 @@ def get_action_space(state):
             ~List of dict [{'factoryIdx': 0, 'colorIdx': 0, 'row': 0}]~
             List of list
     """
-    player = state['player'][state['activePlayer']]
+    p = state['player'][state['activePlayer']]
     actions = []
 
     for factoryIdx, factory in enumerate([state['center']] + state['factory']):
+        # if len(factory) == 0:
+        #     continue
         for color in range(1, NUM_COLORS + 1):
             if color in factory:
                 actions.append([factoryIdx-1, color, -1])
 
-                for r, (gridR, lineR) in enumerate(zip(player['grid'], player['line'])):
-                    if (0 < len(lineR) <= r and color in lineR) or (len(lineR) == 0 and color not in gridR):
+                for r in range(NUM_LINES):
+                    if (
+                        (0 < len(p['line'][r]) <= r and color in p['line'][r]) or
+                        (len(p['line'][r]) == 0 and color not in p['grid'][r])
+                    ):
                         actions.append([factoryIdx-1, color, r])
     return actions
 
@@ -762,3 +781,36 @@ def play(state, action):
         player['floor'] += [mark] * dropPieces
     else:
         player['line'][row] += [mark] * numMark
+
+
+def print_state(state):
+    print('Factory:')
+    for f in state['factory']:
+        print(f)
+    print(' ', state['center'])
+    for i, p in enumerate(state['player']):
+        print(f'Player {i}: {p["score"]}')
+        print(' line: ', p['line'])
+        print(' grid: ', p['grid'])
+        print(' floor: ', p['floor'])
+
+
+def deepcopy(state):
+    obj = state.copy()
+    obj['factory'] = state['factory'].copy()
+    for i, f in enumerate(state['factory']):
+        obj['factory'][i] = f.copy()
+    obj['center'] = state['center'].copy()
+
+    obj['player'] = state['player'].copy()
+    for i, p in enumerate(state['player']):
+        obj['player'][i] = p.copy()
+
+        obj['player'][i]['floor'] = p['floor'].copy()
+        obj['player'][i]['grid'] = p['grid'].copy()
+        obj['player'][i]['line'] = p['line'].copy()
+        for r in range(NUM_COLORS):
+            obj['player'][i]['grid'][r] = p['grid'][r].copy()
+            obj['player'][i]['line'][r] = p['line'][r].copy()
+
+    return obj
