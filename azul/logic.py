@@ -128,7 +128,7 @@ class Board:
 
 
 class Table:
-    numPlayers = 4
+    numPlayers = 3
     activePlayer = 0
 
     def __init__(self):
@@ -584,12 +584,13 @@ def get_reward(obs):
 
     scores = [p['score'] for p in obs['player']]
     # allow too high scores, including letting me win
-    # return [1 + (r - max(scores)) / (1 + max(scores)) for r in scores]
+    return [1 + (r - max(scores)) / (1 + max(scores)) for r in scores]
+    # return [1 + (r - max(scores)) / 100 for r in scores]
     # player losing badly loses motivation and plays randomly
     # return [1 if s == max(scores) else 0 for s in scores]
     # still low motivation, but better
     # return [1 if s == max(scores) else 0.1*s/(max(scores) + 1) for s in scores]
-    return [(s == max(scores)) + s/1_000 for s in scores]
+    # return [(s == max(scores)) + s/1_000 for s in scores]
     # return [1 if s == max(scores) else 0.1*s/(max(scores) + 1) for s in scores]
     # return [r / (sum(scores) + 1) for r in scores]
     # return scores
