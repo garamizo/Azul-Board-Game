@@ -5,22 +5,110 @@ import sympy
 from warnings import warn
 
 model = YOLO('runs/segment/yolov8n_azul15/weights/best.pt')
-# sz=2800x2800, border=150
+# sz=2500x2500, border=0
 PATH_TEMPLATE = 'assets/templates/board.png'
 _template = cv2.imread(PATH_TEMPLATE)
 
-RECT_SCORE = (314-150, 219-150, 2478-314, 914-219)
-RECT_LINE = (195, 989, 1230-344, 2036-1139)
-RECT_GRID = (1556-150, 1139-150, 2434-1556, 2036-1139)
-RECT_FLOOR = (195, 2258, 1783-344, 198)
+RECT_SCORE = [v/2500 for v in (314-150, 219-150, 2478-314, 914-219)]
+RECT_LINE = [v/2500 for v in (195, 989, 1230-344, 2036-1139)]
+RECT_GRID = [v/2500 for v in (1556-150, 1139-150, 2434-1556, 2036-1139)]
+RECT_FLOOR = [v/2500 for v in (195, 2258, 1783-344, 198)]
 
-SIZE_TILE = (198, 198)
-SIZE_MARKER = (215-112, 255-125)
+SIZE_TILE = [v/2500 for v in (198, 198)]
+SIZE_MARKER = [v/2500 for v in (215-112, 255-125)]
 
 SHAPE_SCORE = (6, 20)
 SHAPE_LINE = (5, 5)
 SHAPE_GRID = (5, 5)
 SHAPE_FLOOR = (2, 7)
+
+orb = cv2.ORB_create(
+    nfeatures=2_000,
+    scaleFactor=1.2,
+    edgeThreshold=15,
+    patchSize=31,
+    scoreType=cv2.ORB_HARRIS_SCORE)
+index_params = dict(
+    algorithm=6,  # FLANN_INDEX_LSH
+    table_number=6,
+    key_size=10,
+    multi_probe_level=2)
+
+
+class FeatureExtraction:
+    def __init__(self, img):
+        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        self.kps, self.des = orb.detectAndCompute(
+            gray_img, None)
+        self.matched_pts = []
+
+
+LOWES_RATIO = 0.7
+MIN_MATCHES = 15
+index_params = dict(
+    algorithm=6,  # FLANN_INDEX_LSH
+    table_number=6,
+    key_size=10,
+    multi_probe_level=2)
+search_params = dict(checks=50)
+flann = cv2.FlannBasedMatcher(
+    index_params,
+    search_params)
+
+
+w, h, brd = 800, 800, 80
+bVal = (185, 197, 203)
+matrix = np.float32([
+    [(w-2*brd)/2500, 0, brd],
+    [0, (h-2*brd)/2500, brd]])
+template = cv2.warpAffine(_template, matrix, [w, h], borderValue=bVal)
+_features0 = FeatureExtraction(template)
+_template0 = cv2.resize(_template, [640, 640])
+
+
+def feature_matching(features0, features1):
+    matches = []  # good matches as per Lowe's ratio test
+    if (features0.des is not None and len(features0.des) > 2):
+        all_matches = flann.knnMatch(
+            features0.des, features1.des, k=2)
+        try:
+            for m, n in all_matches:
+                if m.distance < LOWES_RATIO * n.distance:
+                    matches.append(m)
+        except ValueError:
+            pass
+        if (len(matches) > MIN_MATCHES):
+            features0.matched_pts = np.float32(
+                [features0.kps[m.queryIdx].pt for m in matches]
+            ).reshape(-1, 1, 2)
+            features1.matched_pts = np.float32(
+                [features1.kps[m.trainIdx].pt for m in matches]
+            ).reshape(-1, 1, 2)
+    return matches
+
+
+def corners_from_dm(frame, border):
+    """Find corners of board using descriptor (ORB) matching"""
+    h, w, c = frame.shape
+    brd = border
+
+    features1 = FeatureExtraction(frame)
+    matches = feature_matching(_features0, features1)
+
+    if len(features1.matched_pts) == 0:
+        return None
+
+    return cv2.findHomography(
+        features1.matched_pts, _features0.matched_pts, cv2.RANSAC, 5.0)[0]
+
+
+def mse(img1, img2):
+    h, w, c = img1.shape
+    diff = cv2.subtract(cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY),
+                        cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY))
+    err = np.sum(diff**2)
+    mse = err/(float(h*w))
+    return mse
 
 
 def get_boards(img, plot=False):
@@ -30,47 +118,53 @@ def get_boards(img, plot=False):
 
     h1, w1 = masks[0].shape
     hf, wf, _ = img.shape
-    BRD, FSZ = 50, 800
+    BRD, FSZ = 80, 800
     dst = np.float32([[BRD, BRD], [FSZ-BRD, BRD],
                      [FSZ-BRD, FSZ-BRD], [BRD, FSZ-BRD]])
 
     BRD2, FSZ2 = 0, 640
     sz = FSZ2 / 640
-    dst2 = np.float32([[BRD2, BRD2], [FSZ2-BRD2, BRD2],
-                      [FSZ2-BRD2, FSZ2-BRD2], [BRD2, FSZ2-BRD2]])
+    # dst2 = np.float32([[BRD2, BRD2], [FSZ2-BRD2, BRD2],
+    #                   [FSZ2-BRD2, FSZ2-BRD2], [BRD2, FSZ2-BRD2]])
+    # C1 to C0
+    matrix3 = cv2.getPerspectiveTransform(dst, np.float32([
+        [0, 0], [FSZ2, 0], [FSZ2, FSZ2], [0, FSZ2]]))
 
-    MIN_MATCH_VAL = 1500
+    MIN_MATCH_VAL = 500
     BORDER_COLOR = (81, 56, 40)
 
     imgBoard = []
     for i, data in enumerate(masks):
         mask = np.uint8(data)
         src = corners_from_mask(mask)
+        # raw to C1'
         matrix = cv2.getPerspectiveTransform(
             np.float32(src * [wf/w1, hf/h1]), dst)
         frame = cv2.warpPerspective(
             imgClean, matrix, (FSZ, FSZ), borderMode=cv2.BORDER_REPLICATE)
 
-        src2 = corner_from_closeup(frame)[0]
-        if src2 is None:
-            warn('Missing edge from board')
-            continue
+        # # Hough method
+        # src2 = corner_from_closeup(frame)[0]
+        # if src2 is None:
+        #     warn('Missing edge from board')
+        #     continue
+        # matrix2 = cv2.getPerspectiveTransform(np.float32(src2), dst2)
+        # frame = cv2.warpPerspective(
+        #     imgClean, matrix2 @ matrix, (FSZ2, FSZ2), borderValue=BORDER_COLOR)
+        # frame, valMatch = orient_board(frame, border=BRD2)
+        # if valMatch < MIN_MATCH_VAL:
+        #     warn('Bad match')
+        #     continue
 
-        matrix2 = cv2.getPerspectiveTransform(np.float32(src2), dst2)
+        # C1' to C1
+        matrix2 = corners_from_dm(frame, BRD)
+        if matrix2 is None:
+            warn('No ORB match found')
+            continue
         frame = cv2.warpPerspective(
-            imgClean, matrix2 @ matrix, (FSZ2, FSZ2), borderValue=BORDER_COLOR)
-
-        frame, valMatch = orient_board(frame, border=FSZ2//50)
-        if valMatch < MIN_MATCH_VAL:
-            warn('Bad match')
-            continue
+            imgClean, matrix3 @ matrix2 @ matrix, (FSZ2, FSZ2), borderValue=BORDER_COLOR)
+        valMatch = mse(frame, _template0)
         if plot:
-            # M = matrix2 @ matrix
-            # Psrc2 = [np.linalg.solve(M[:2, :2], pt - M[:2, 2]) for pt in src2]
-
-            # cv2.polylines(img, [np.int32(Psrc2)],
-            #               True, color=(0, 0, 255), thickness=int(np.ceil(5*sz)))
-
             cv2.polylines(maskMerge, [np.int32(src)],
                           True, color=2, thickness=int(np.ceil(1*sz)))
             for pt in src:
@@ -265,7 +359,7 @@ def corners_from_coefs(coefs, numCorners=4):
 
 def orient_board(imgBoard, border=0):
     h, w = imgBoard.shape[:2]
-    TPT_SHAPE = (w + 2*border, h + 2*border)
+    TPT_SHAPE = (w - 2*border, h - 2*border)
     template = cv2.resize(_template, TPT_SHAPE)
 
     bestVal = -np.Inf
