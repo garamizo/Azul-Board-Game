@@ -115,6 +115,10 @@ class Azul:
                 event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
             ):
                 quit()
+
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                obs = self.logic.get_observation()
+                print(obs)
             elif event.type == pygame.MOUSEBUTTONDOWN:
 
                 self.timeLastEvent = pygame.time.get_ticks()
@@ -159,9 +163,9 @@ class Azul:
                 self._draw()
 
                 t0 = pygame.time.get_ticks()
-                MIN_ROLLS, rolls = 1300, 0
+                MIN_ROLLS, rolls = 2000, 0
                 with tqdm(total=MIN_ROLLS) as pbar:
-                    while rolls < MIN_ROLLS and pygame.time.get_ticks() - t0 < 10_000:
+                    while rolls < MIN_ROLLS and pygame.time.get_ticks() - t0 < 5_000:
                         self.process_AI(2)
                         (self.playFactoryIdx, self.playMark, self.playLineIdx), actionIdx = \
                             MCTS_node.get_best_action(self.aiEngine)

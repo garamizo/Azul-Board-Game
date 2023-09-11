@@ -3,6 +3,7 @@ import numpy as np
 from ultralytics import YOLO
 import sympy
 from warnings import warn
+import matplotlib.pyplot as plt
 
 model = YOLO('runs/segment/yolov8n_azul15/weights/best.pt')
 # sz=2500x2500, border=0
@@ -28,6 +29,12 @@ orb = cv2.ORB_create(
     edgeThreshold=15,
     patchSize=31,
     scoreType=cv2.ORB_HARRIS_SCORE)
+orbLarge = cv2.ORB_create(
+    nfeatures=2_000,
+    scaleFactor=1.2,
+    edgeThreshold=15,
+    patchSize=31,
+    scoreType=cv2.ORB_HARRIS_SCORE)
 index_params = dict(
     algorithm=6,  # FLANN_INDEX_LSH
     table_number=6,
@@ -36,10 +43,14 @@ index_params = dict(
 
 
 class FeatureExtraction:
-    def __init__(self, img):
+    def __init__(self, img, isTemplate=False):
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        self.kps, self.des = orb.detectAndCompute(
-            gray_img, None)
+        if isTemplate:
+            self.kps, self.des = orbLarge.detectAndCompute(
+                gray_img, None)
+        else:
+            self.kps, self.des = orb.detectAndCompute(
+                gray_img, None)
         self.matched_pts = []
 
 
@@ -62,7 +73,7 @@ matrix = np.float32([
     [(w-2*brd)/2500, 0, brd],
     [0, (h-2*brd)/2500, brd]])
 template = cv2.warpAffine(_template, matrix, [w, h], borderValue=bVal)
-_features0 = FeatureExtraction(template)
+_features0 = FeatureExtraction(template, isTemplate=True)
 _template0 = cv2.resize(_template, [640, 640])
 
 
@@ -107,13 +118,15 @@ def mse(img1, img2):
     diff = cv2.subtract(cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY),
                         cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY))
     err = np.sum(diff**2)
+    # calculate nmse
+    # nmse = err/(float(h*w)) / 255**2
     mse = err/(float(h*w))
     return mse
 
 
 def get_boards(img, plot=False):
     imgClean = img.copy()
-    masks = segment(img, plot)
+    masks, boxes = segment(img, plot)
     maskMerge = np.sum(np.uint8(masks), axis=0).astype(np.uint8)
 
     h1, w1 = masks[0].shape
@@ -124,37 +137,19 @@ def get_boards(img, plot=False):
 
     BRD2, FSZ2 = 0, 640
     sz = FSZ2 / 640
-    # dst2 = np.float32([[BRD2, BRD2], [FSZ2-BRD2, BRD2],
-    #                   [FSZ2-BRD2, FSZ2-BRD2], [BRD2, FSZ2-BRD2]])
     # C1 to C0
     matrix3 = cv2.getPerspectiveTransform(dst, np.float32([
         [0, 0], [FSZ2, 0], [FSZ2, FSZ2], [0, FSZ2]]))
-
-    MIN_MATCH_VAL = 500
     BORDER_COLOR = (81, 56, 40)
 
-    imgBoard = []
-    for i, data in enumerate(masks):
-        mask = np.uint8(data)
-        src = corners_from_mask(mask)
+    imgBoard, matrices = [], []
+    for mask, box in zip(masks, boxes):
+        src = corners_from_mask(np.uint8(mask))
         # raw to C1'
         matrix = cv2.getPerspectiveTransform(
             np.float32(src * [wf/w1, hf/h1]), dst)
         frame = cv2.warpPerspective(
             imgClean, matrix, (FSZ, FSZ), borderMode=cv2.BORDER_REPLICATE)
-
-        # # Hough method
-        # src2 = corner_from_closeup(frame)[0]
-        # if src2 is None:
-        #     warn('Missing edge from board')
-        #     continue
-        # matrix2 = cv2.getPerspectiveTransform(np.float32(src2), dst2)
-        # frame = cv2.warpPerspective(
-        #     imgClean, matrix2 @ matrix, (FSZ2, FSZ2), borderValue=BORDER_COLOR)
-        # frame, valMatch = orient_board(frame, border=BRD2)
-        # if valMatch < MIN_MATCH_VAL:
-        #     warn('Bad match')
-        #     continue
 
         # C1' to C1
         matrix2 = corners_from_dm(frame, BRD)
@@ -163,6 +158,15 @@ def get_boards(img, plot=False):
             continue
         frame = cv2.warpPerspective(
             imgClean, matrix3 @ matrix2 @ matrix, (FSZ2, FSZ2), borderValue=BORDER_COLOR)
+
+        c0 = src.mean(0)
+        wid = np.sum((src - src[[1, 2, 3, 0]])**2, 1).mean()
+
+        upVector = np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1]-wid/50, 1]) - \
+            np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1], 1])
+        # upVector = matrix3 @ matrix2 @ matrix @ [c0[0], c0[1], 1] - \
+        #     matrix3 @ matrix2 @ matrix @ [c0[0], c0[1]-wid/20, 1]
+
         valMatch = mse(frame, _template0)
         if plot:
             cv2.polylines(maskMerge, [np.int32(src)],
@@ -174,8 +178,9 @@ def get_boards(img, plot=False):
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2*sz, (50, 50, 255), int(3*sz))
 
         imgBoard.append(frame)
+        matrices.append(upVector)
 
-    return imgBoard, maskMerge
+    return imgBoard, maskMerge, matrices
 
 
 def segment(img, plot=False):
@@ -199,7 +204,7 @@ def segment(img, plot=False):
             cv2.putText(img, f"{model.names[classid]} {confidence:.2}",
                         (box[0], box[1] - int(3*sz)), cv2.FONT_HERSHEY_SIMPLEX, 0.6*sz, (255, 255, 255), int(2*sz))
 
-    return results[0].masks.data
+    return results[0].masks.data, results[0].boxes.data
 
 
 def signed_area(u, v):
@@ -218,7 +223,7 @@ def corners_from_mask(mask, numCorners=4):
               xy[:, 0, 1].max() - xy[:, 0, 1].min() for xy in contours]
     xy = contours[np.argmax(extent)][:, 0, :]
 
-    # resample points to make consecutive points equally distanced
+    # resample points to make consecutive points equally distant
     xyup = np.vstack([xy, xy[0]])
     clen = np.hstack(
         [0, np.cumsum(np.sqrt(np.sum((xyup[1:] - xyup[:-1])**2, 1)))])
@@ -237,7 +242,7 @@ def corners_from_mask(mask, numCorners=4):
     flags = cv2.KMEANS_RANDOM_CENTERS
     labels = None
     retval, labels, _ = cv2.kmeans(features, numCorners,
-                                   labels, criteria, 10, flags)
+                                   labels, criteria, 15, flags)
 
     # calc line coefficients as edge center and unit direction
     coefs = []

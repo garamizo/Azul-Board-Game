@@ -5,9 +5,9 @@ from random import choice
 # from numba import njit
 try:
     # from utils import deepcopy
-    from logic import is_terminal, get_reward_simple, get_action_space, play, get_reward, deepcopy
+    from logic import is_terminal, get_action_space, play, get_reward, deepcopy, get_random_action
 except ModuleNotFoundError:
-    from azul.logic import is_terminal, get_reward_simple, get_action_space, play, get_reward, deepcopy
+    from azul.logic import is_terminal, get_action_space, play, get_reward, deepcopy, get_random_action
     # from azul.utils import deepcopy
 
 # from azul.tictactoe import is_terminal, get_reward_simple, get_action_space, play, get_reward, REWARD_SUM_MAX
@@ -19,105 +19,6 @@ def get_winner(reward):
         return reward.index(maxPts)
     else:
         return choice([i for i, val in enumerate(reward) if val == maxPts])
-
-
-def maxn(state, depth, alpha):
-    currentPlayer = state['activePlayer']
-    if is_terminal(state) or depth <= 0:
-        return get_reward(state), None
-
-    best = [-np.Inf] * state['numPlayers']
-    actionBest = None
-    for action in get_action_space(state):
-        stateNew = deepcopy(state)
-        play(stateNew, action)
-        result, _ = maxn(stateNew, depth-1, best[currentPlayer])
-
-        if result[currentPlayer] > best[currentPlayer]:
-            best, actionBest = result, action
-
-        if result[currentPlayer] >= REWARD_SUM_MAX - alpha:
-            return result, actionBest
-    return best, actionBest
-
-
-def paranoid(state, depth, alpha, beta, rootPlayer):
-    activePlayer = state['activePlayer']
-    if is_terminal(state) or depth <= 0:
-        reward = get_reward(state)[activePlayer]
-        return (1 if activePlayer == rootPlayer else -1) * reward, None
-
-    actionBest = None
-    for action in get_action_space(state):
-        stateNew = deepcopy(state)
-        play(stateNew, action)
-        if activePlayer == rootPlayer or stateNew['activePlayer'] == rootPlayer:
-            reward = -paranoid(stateNew, depth-1, -beta, -alpha, rootPlayer)[0]
-        else:
-            reward = paranoid(stateNew, depth-1, alpha, beta, rootPlayer)[0]
-
-        if reward > alpha:
-            alpha = reward
-            actionBest = action
-
-        if alpha >= beta:
-            return beta, actionBest
-
-    return alpha, actionBest
-
-
-def negamax(state, currentPlayer, depth, playerMaxIdx):
-    """
-        2 player negamax
-            depth
-            currentPlayer: -1 or 1
-    """
-    if is_terminal(state) or depth <= 0:
-        winnerIdx = get_winner(get_reward_simple(deepcopy(state)))
-        return currentPlayer if playerMaxIdx == winnerIdx else -currentPlayer, None
-        # return currentPlayer, None
-
-    valMax, actionMax = -np.Inf, None
-    for action in get_action_space(state):
-        stateNew = deepcopy(state)
-        play(stateNew, action)
-        val = -negamax(stateNew, -currentPlayer, depth-1, playerMaxIdx)[0]
-        if val >= valMax:
-            valMax = val
-            actionMax = action
-
-    return valMax, actionMax
-
-
-def alphabeta(state, currentPlayer, depth, alpha, beta, playerMaxIdx):
-    """
-        2 player negamax
-            depth
-            currentPlayer: -1 or 1
-    """
-    if is_terminal(state) or depth <= 0:
-        winnerIdx = get_winner(get_reward_simple(deepcopy(state)))
-        return currentPlayer if playerMaxIdx == winnerIdx else -currentPlayer, None
-
-    actionMax = None
-    for action in get_action_space(state):
-        stateNew = deepcopy(state)
-        play(stateNew, action)
-        val = -alphabeta(stateNew, -currentPlayer, depth -
-                         1, -beta, -alpha, playerMaxIdx)[0]
-        if val > alpha:
-            alpha = val
-            actionMax = action
-
-        if alpha >= beta:
-            return beta, None
-
-    return alpha, actionMax
-
-
-def get_random_action(state):
-    actions = get_action_space(state)
-    return choice(actions)
 
 
 class MCTS_node:
@@ -134,8 +35,6 @@ class MCTS_node:
             state: state dict, with at least 'activePlayer'
             board: game state
         """
-        # TODO mark not necessary. Implied by board and action
-
         self.parent = parent
         self.state = state
 
@@ -243,38 +142,13 @@ class MCTS_node:
     def print(self):
         import numpy as np
         print(
-            f"{self.numRolls=}, {self.numWins=}, {self.state['activePlayer']=}")
+            f"Rolls: {self.numRolls}, Win ratio: {self.numWins/self.numRolls:.2}, Active player: {self.state['activePlayer']}")
         # print(np.reshape(self.board, [6, 7]))
         print("\tAction\t\tUCB\tWRatio\tNumSims")
         if self.child is None:
-            print(f"Winner: {get_winner(get_reward(self.state))}")
+            print(f"Winner: {get_winner(get_reward(deepcopy(self.state)))}")
         else:
             for a, n in zip(self.action, self.child):
                 if n is not None:
                     print(
                         f"\t{a}\t{n.eval():.2f}\t{n.numWins/n.numRolls:.3f}\t{n.numRolls}")
-
-
-# def agent_uct(obs):
-#     global root_
-
-#     startTime = time()
-#     TIMEOUT = 5.0
-
-#     # select branch as root per choice of other players
-#     root_ = MCTS_node.search_node(root_, obs['state'], maxDepth=4)
-#     root_.parent = None
-
-#     # start new tree
-#     if root_ is None:
-#         root_ = MCTS_node(obs["state"])
-
-#     # grow tree in alloted time
-#     root_.grow(TIMEOUT, startTime)
-
-#     # select best branch
-#     action, actionIdx = MCTS_node.get_best_action(root_)
-#     root_ = root_.child[actionIdx]
-#     root_.parent = None
-
-#     return action
