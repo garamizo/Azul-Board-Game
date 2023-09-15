@@ -12,10 +12,12 @@ from tqdm import tqdm
 DELAY_ANIMATION = 250
 DELAY_AI_MOVE = 4000
 AI_MOVE = pygame.USEREVENT + 1
+COLOR_NAME = {1: "BLUE", 2: "YELLOW", 3: "RED", 4: "BLACK", 5: "WHITE"}
+ROW_NAME = {0: "FIRST", 1: "SECOND", 2: "THIRD", 3: "FOURTH", 4: "FIFTH"}
 
 
 class Azul:
-    isHumanPlayer = [True, False, False, False]
+    isHumanPlayer = [False, True, False]
 
     def __init__(self):
         # seed(1)
@@ -46,7 +48,7 @@ class Azul:
         self.FONT_DISPLAY_MESSAGE = pygame.font.SysFont(None, 200, bold=False)
         self.FONT_HELP_MESSAGE = pygame.font.SysFont(None, 40, bold=False)
 
-        self.logic = Table()
+        self.logic = Table(len(self.isHumanPlayer))
         # self.logic.reset()
         obs = self.logic.get_observation()
         self.isHumanPlayer = self.isHumanPlayer[:len(obs['player'])]
@@ -176,7 +178,7 @@ class Azul:
                 node = self.aiEngine.child[actionIdx]
                 print((f"AI {self.aiEngine.state['activePlayer'] + 1} action:"
                        f"factoryIdx: {self.playFactoryIdx}, "
-                       f"color: {self.playMark}, row: {self.playLineIdx}, "
+                       f"color: {COLOR_NAME[self.playMark]}, row: {ROW_NAME[self.playLineIdx]}, "
                        f"numSims: {node.numRolls}, "
                        f"avgReward: {node.numWins/node.numRolls: .3}"))
 
@@ -244,7 +246,7 @@ class Azul:
         if self.activeBoard.isHuman:
             print((f"Human {self.obsOld['activePlayer'] + 1} action:"
                    f"factoryIdx: {self.playFactoryIdx}, "
-                   f"color: {self.playMark}, row: {self.playLineIdx}"))
+                   f"color: {COLOR_NAME[self.playMark]}, row: {ROW_NAME[self.playLineIdx]}"))
 
         self.logic.step_move(
             self.playMark, self.playFactoryIdx, self.playLineIdx)

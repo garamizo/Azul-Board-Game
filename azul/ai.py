@@ -28,7 +28,7 @@ class MCTS_node:
     """
     c = sqrt(2)
 
-    def __init__(self, state, parent=None):
+    def __init__(self, state, parent=None, progressiveBias=True):
         """
             parent: tree parent
             action: player action ie. "move" from self to child
@@ -37,14 +37,16 @@ class MCTS_node:
         """
         self.parent = parent
         self.state = state
+        self.progressiveBias = progressiveBias
 
         self.numRolls = 0  # num of sims spamming from current node
         self.numWins = 0  # num of wins for parent
 
         if is_terminal(state):
-            self.child, self.action = None, None
+            self.child, self.action, self.bias = None, None, None
         else:
-            self.action = get_action_space(state)
+            self.action, self.bias = get_action_space(
+                state, self.progressiveBias)
             self.child = [None] * len(self.action)
 
     def select_leaf(self):
@@ -53,16 +55,19 @@ class MCTS_node:
         """
         node = self
         while None not in node.child:  # node has an unexplored child
-            maxVal = -1
+            valBest = -100
             k = MCTS_node.c * sqrt(log(node.numRolls))
-            for child in node.child:
-                val = child.numWins / child.numRolls + k / sqrt(child.numRolls)
-                if val > maxVal:
-                    maxVal = val
-                    node = child
+            for child, bias in zip(node.child, node.bias):
+                val = child.numWins / child.numRolls + k / \
+                    sqrt(child.numRolls) + bias / (child.numRolls + 1)
 
-            if node.child is None:  # terminal node
-                return node, None
+                if val > valBest:
+                    valBest = val
+                    nodeBest = child
+
+            if nodeBest.child is None:  # terminal node
+                return nodeBest, None
+            node = nodeBest
 
         # pick one unexplored child randomly
         actionIdx = choice([i for i, n in enumerate(node.child) if n is None])
@@ -135,7 +140,8 @@ class MCTS_node:
         return None
 
     def get_best_action(self):
-        winRatios = [node.numWins / node.numRolls for node in self.child]
+        winRatios = [
+            node.numWins / node.numRolls if node is not None else 0 for node in self.child]
         actionIdx = winRatios.index(max(winRatios))
         return self.action[actionIdx], actionIdx
 
