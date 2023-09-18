@@ -8,6 +8,7 @@ from random import choice, shuffle, random, randint, choices
 #     from azul.utils import deepcopy
 # from copy import deepcopy
 
+
 NUM_LINES = 5
 NUM_COLORS = 5
 NUM_FLOOR = 7
@@ -125,6 +126,13 @@ class Board:
             if np.sum(self.grid == i+1) == NUM_COLORS:
                 finalScore += PTS_PER_SET
         return finalScore
+
+
+class Action:
+    def __init__(self, factoryIdx, color, row):
+        self.factoryIdx = factoryIdx
+        self.color = color
+        self.row = row
 
 
 class Table:
@@ -603,8 +611,8 @@ def get_reward(obs):
         Stochastic
     """
     POINT_REWARD = 0.001
-    # if obs['roundIdx'] < 0:
-    #     return get_reward_heuristic(obs)
+    if obs['roundIdx'] < 3:
+        return get_reward_heuristic(obs)
 
     NUM_REPS = 10
 

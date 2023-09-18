@@ -42,12 +42,19 @@ class MCTS_node:
         self.numRolls = 0  # num of sims spamming from current node
         self.numWins = 0  # num of wins for parent
 
-        if is_terminal(state):
+        if is_terminal(self.state):
             self.child, self.action, self.bias = None, None, None
         else:
             self.action, self.bias = get_action_space(
-                state, self.progressiveBias)
+                self.state, self.progressiveBias)
             self.child = [None] * len(self.action)
+
+    def get_child(self, actionIdx):
+        return self.child[actionIdx]
+
+    def get_action(self, actionIdx):
+        child = self.child[actionIdx]
+        return *self.action[actionIdx], child.numRolls, child.numWins
 
     def select_leaf(self):
         """
@@ -123,27 +130,43 @@ class MCTS_node:
         while time() < startTime + timeout:
             pass
 
-    @staticmethod
-    def search_node(root, state, maxDepth=3):
+    def search_node(self, state, maxDepth=3):
         # search with limited depth
-        if root.state == state:
-            return root
+        if self.state == state:
+            self.parent = None
+            return self
         # terminal node or too deep
-        if maxDepth <= 0 or root.child is None:
+        if maxDepth <= 0 or self.child is None:
             return None
 
-        for node in root.child:
+        for node in self.child:
             if node is not None:
-                nodeOut = MCTS_node.search_node(node, state, maxDepth-1)
-                if nodeOut is not None:
-                    return nodeOut
+                nodeFound = node.search_node(state, maxDepth-1)
+                if nodeFound is not None:
+                    return nodeFound
         return None
+
+    # @staticmethod
+    # def search_node(root, state, maxDepth=3):
+    #     # search with limited depth
+    #     if root.state == state:
+    #         return root
+    #     # terminal node or too deep
+    #     if maxDepth <= 0 or root.child is None:
+    #         return None
+
+    #     for node in root.child:
+    #         if node is not None:
+    #             nodeOut = MCTS_node.search_node(node, state, maxDepth-1)
+    #             if nodeOut is not None:
+    #                 return nodeOut
+    #     return None
 
     def get_best_action(self):
         winRatios = [
             node.numWins / node.numRolls if node is not None else 0 for node in self.child]
         actionIdx = winRatios.index(max(winRatios))
-        return self.action[actionIdx], actionIdx
+        return actionIdx
 
     def print(self):
         import numpy as np
