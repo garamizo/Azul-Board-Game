@@ -68,7 +68,31 @@ class GameUtils
         Console.WriteLine("]");
     }
 
-    public static float[] PassthroughMap(float[] scores)
+
+    public static List<T[]> GetPermutations<T>(T[] input)
+    {
+        var result = new List<T[]>();
+
+        void RecursiveAlgorithm(List<T> element, List<T> bag)
+        {
+            if (bag.Count == 0)
+                result.Add(element.ToArray());
+            else
+                for (int i = 0; i < bag.Count; i++)
+                {
+                    List<T> bagNew = new(bag.Where((e, idx) => idx != i));
+                    element.Add(bag[i]);
+                    RecursiveAlgorithm(element, bagNew);
+                    element.RemoveAt(element.Count - 1);
+                }
+        }
+        RecursiveAlgorithm(new List<T>(), input.ToList());
+        return result;
+    }
+}
+class RewardMap
+{
+    public static float[] Passthrough(float[] scores)
     {
         float scoreMax = scores.Max() + 0.01f;
         float[] reward = new float[scores.Length];
@@ -77,7 +101,7 @@ class GameUtils
         return reward;
     }
 
-    public static float[] MinMaxMap(float[] scores)
+    public static float[] MinMax(float[] scores)
     {
         float scoreMax = scores.Max();
         float scoreMin = scores.Min();
@@ -87,7 +111,7 @@ class GameUtils
         return reward;
     }
 
-    public static float[] LinearMap(float[] scores)
+    public static float[] Linear(float[] scores)
     {
         float scoreSum = scores.Sum() + 0.01f;
         float[] reward = new float[scores.Length];
@@ -96,16 +120,16 @@ class GameUtils
         return reward;
     }
 
-    public static float[] SigmoidMap(float[] scores)
+    public static float[] Sigmoid(float[] scores)
     {
         float scoreSum = scores.Sum() + 0.01f;
         float[] reward = new float[scores.Length];
         for (int i = 0; i < scores.Length; i++)
-            reward[i] = 2 * Sigmoid(5 * scores[i] / scoreSum) - 1.0f;
+            reward[i] = 2 * GameUtils.Sigmoid(5 * scores[i] / scoreSum) - 1.0f;
         return reward;
     }
 
-    public static float[] WinLoseMap(float[] scores)
+    public static float[] WinLose(float[] scores)
     {
         float scoreMax = scores.Max();
         int ties = 0;
@@ -119,7 +143,7 @@ class GameUtils
         return reward;
     }
 
-    public static float[] WinLosePlusMap(float[] scores)
+    public static float[] WinLosePlus(float[] scores)
     {
         float scoreMax = scores.Max();
         int ties = 0;
@@ -129,9 +153,11 @@ class GameUtils
 
         float[] reward = new float[scores.Length];
         for (int i = 0; i < scores.Length; i++)
-            reward[i] = (scores[i] == scoreMax ? 1.0f / ties : 0.0f) + scores[i] / 10_000.0f;
+            reward[i] = (scores[i] == scoreMax ? 1.0f / ties : 0.0f) + scores[i] / 100_000.0f;
         return reward;
     }
+
+
 
 
 }

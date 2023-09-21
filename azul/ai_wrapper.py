@@ -8,13 +8,19 @@ if True:
     sys.path.append(r"AzulLibrary/bin/Release/net6.0")
     clr.AddReference('AzulLibrary')  # add .dll file
     from Azul import Game, GameAction
-    from Ai import MCTS
+    from Ai import MCTS_Stochastic as MCTS
+    # from Ai import MCTS
 
 
 class MCTS_node:
 
-    def __init__(self, state, parent=None):
+    def __init__(self, state, parent=None, actionIdx=None):
+        # only used for construction
         self.core = MCTS(state.core, parent.core if parent else None)
+        if parent == None:
+            self.core = MCTS(state.core)
+        else:
+            self.core = MCTS(parent.core, actionIdx)
 
     @property
     def numRolls(self):

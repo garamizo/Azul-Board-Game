@@ -37,6 +37,9 @@ class Table:
             GameAction(self.numFactories if factoryIdx < 0 else factoryIdx,
                        color-1, NUM_ROWS if row < 0 else row, self.core))
 
+    def get_printable(self):
+        return Game.ToScript(self.core)
+
     def get_observation(self):
         a = self.core
 
@@ -68,7 +71,7 @@ class Table:
             for row in range(NUM_ROWS):
                 line = []
                 for color in range(NUM_COLORS):
-                    line += [color+1] * p.line[row][color]
+                    line += [color+1] * p.line[row, color]
                 lines.append(line)
 
             player = dict(grid=grid, line=lines, score=p.score, floor=floor)

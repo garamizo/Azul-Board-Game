@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection.Metadata;
+using DeepCopy;
 using Utils;
 
 static class Constants
@@ -46,22 +47,22 @@ public class Game
     public int numFactories;  // not counting center (factories[-1])
     public int activePlayer = 0;
     public int roundIdx = 0;
-    public int step = 0;
-    const int MAX_STEPS = 1_000;
+    public int step = 0;  // player steps
+    const int MAX_STEPS = 1_000;  // max number of game steps before stalemate
     public Player[] players;
     // center == factories[0]
     public int[][] factories;  // factoryIdx, colorIdx: numTiles
     public int[] bag = new int[Constants.numColors];  // numTiles per color
     public int[] discarded = new int[Constants.numColors];  // numTiles per color
-    int[] factoryIdxArray;
-    int[] rowIdxArray;
-    int[] colorIdxArray;
-    UInt64 factoryHash = 0;
+    static int[] factoryIdxArray = new int[9];
+    static int[] rowIdxArray = new int[Constants.numRows + 1];
+    static int[] colorIdxArray = new int[Constants.numColors];
+    public UInt64 chanceHash = 0;
     public int CENTER;
 
-    public Game(int numPlayers_ = 2)
+    public Game(int numPlayers = 2)
     {
-        numPlayers = numPlayers_;
+        this.numPlayers = numPlayers;
         numFactories = FactoriesVsPlayer(numPlayers);
         CENTER = numFactories;
         players = new Player[numPlayers];
@@ -81,16 +82,111 @@ public class Game
         FillFactories();
 
         // intialize randomized idx arrays
-        factoryIdxArray = new int[numFactories + 1];
+        factoryIdxArray = new int[numFactories + 1];  // update size
         for (int i = 0; i < numFactories + 1; i++)
             factoryIdxArray[i] = i;
-        rowIdxArray = new int[Constants.numRows + 1];
         for (int i = 0; i < Constants.numRows + 1; i++)
             rowIdxArray[i] = i;
-        colorIdxArray = new int[Constants.numColors + 1];
-        for (int i = 0; i < Constants.numColors + 1; i++)
+        for (int i = 0; i < Constants.numColors; i++)
             colorIdxArray[i] = i;
     }
+
+    public static GameAction DefaultPolicy(Game g)
+    {
+        GameUtils.Shuffle<int>(rng, Game.factoryIdxArray);
+        GameUtils.Shuffle<int>(rng, Game.colorIdxArray);
+        GameUtils.Shuffle<int>(rng, Game.rowIdxArray);
+
+        GameAction actionBest = new GameAction();
+        int searchTries = 15;
+        int scoreMax = -1;
+        foreach (var factoryIdx in factoryIdxArray)
+            foreach (var color in colorIdxArray)
+                foreach (var row in rowIdxArray)
+                    if (g.IsValid(factoryIdx, color, row))
+                    {
+                        int numTiles = g.factories[factoryIdx][color];
+                        bool isFirst = factoryIdx == g.CENTER && g.factories[g.CENTER][(int)Tiles.FIRST_MOVE] > 0;
+
+                        Player p = new(g.players[g.activePlayer]);
+                        GameAction a = new GameAction(factoryIdx, color, row, numTiles, isFirst, g.activePlayer);
+
+                        p.Play(ref a);
+                        p.UpdateRound();
+                        p.UpdateGame();
+
+                        if (p.score > scoreMax)
+                        {
+                            scoreMax = p.score;
+                            actionBest = a;
+                        }
+                        searchTries--;
+                        if (searchTries < 0 && scoreMax > 0)
+                            return actionBest;
+                    }
+        return actionBest;
+    }
+
+    // e==0: greedy, e==1: random
+    public static GameAction EGreedyPolicy(Game g, float e)
+    {
+        if (e < 0)
+            return DefaultPolicy(g);
+        if (Game.rng.NextDouble() < e)
+            return g.GetRandomAction();
+
+        GameAction actionBest = new GameAction();
+        int scoreMax = -1;
+        foreach (var factoryIdx in factoryIdxArray)
+            foreach (var color in colorIdxArray)
+                foreach (var row in rowIdxArray)
+                    if (g.IsValid(factoryIdx, color, row))
+                    {
+                        int numTiles = g.factories[factoryIdx][color];
+                        bool isFirst = factoryIdx == g.CENTER && g.factories[g.CENTER][(int)Tiles.FIRST_MOVE] > 0;
+
+                        Player p = new(g.players[g.activePlayer]);
+                        GameAction a = new GameAction(factoryIdx, color, row, numTiles, isFirst, g.activePlayer);
+
+                        p.Play(ref a);
+                        p.UpdateRound();
+                        p.UpdateGame();
+
+                        if (p.score > scoreMax)
+                        {
+                            scoreMax = p.score;
+                            actionBest = a;
+                        }
+                    }
+        return actionBest;
+    }
+    // public static GameAction EGreedyPolicy(Game game, float e)
+    // {
+    //     if (Game.rng.NextDouble() < e)
+    //         return game.GetRandomAction();
+
+    //     // evaluate 1 step in the future
+    //     var actions = game.GetPossibleActions();
+
+    //     // pretend end of round, to evaluate points
+    //     int scoreMax = -1;
+    //     for (int i = 0; i < actions.Count; i++)
+    //     {
+    //         Player p = new(game.players[game.activePlayer]);
+    //         GameAction a = actions[i];
+
+    //         p.Play(ref a);
+    //         p.UpdateRound();
+    //         p.UpdateGame();
+
+    //         if (p.score > scoreMax)
+    //         {
+    //             scoreMax = p.score;
+    //             actions[0] = a;
+    //         }
+    //     }
+    //     return actions[0];
+    // }
 
     public UInt64 GetHash()
     {
@@ -131,7 +227,7 @@ public class Game
             for (int row = 0; row < Constants.numRows; row++)
                 for (int col = 0; col < Constants.numCols; col++)
                     if (a.players[i].grid[row, col] != b.players[i].grid[row, col] ||
-                        a.players[i].line[row][col] != b.players[i].line[row][col])
+                        a.players[i].line[row, col] != b.players[i].line[row, col])
                         return false;
             for (int j = 0; j < Constants.numColors + 1; j++)
                 if (a.players[i].floor[j] != b.players[i].floor[j])
@@ -155,16 +251,26 @@ public class Game
             new int[]{ 1, 0, 0, 0, 0, 0 },
         };
         game.bag = new int[] { 0, 0, 0, 0, 0 };
-        game.discarded = new int[] { 15, 15, 15, 15, 15 };
+        game.discarded = new int[] { 26, 2, 0, 0, 0 };
 
         // game.players[0].line[1] = new int[] { 0, 0, 0, 0, 0 };
 
         game.players[0].score = 100;
-        game.players[0].grid[1, 0] = 1;
-        game.players[0].floor[(int)Tiles.FIRST_MOVE] = 1;
+        game.players[0].line = new int[,] {
+            {0, 0, 0, 0, 0},
+            {0, 0, 0, 0, 0},
+            {0, 1, 0, 0, 0},
+            {0, 1, 0, 0, 0},
+            {0, 0, 0, 0, 0},};
+        game.players[0].grid = new int[,] {
+            { 0, 0, 0, 0, 0},
+            { 0, 0, 0, 0, 0},
+            { 0, 0, 0, 0, 0},
+            { 0, 0, 0, 0, 0},
+            { 1, 1, 1, 1, 0},};
         game.players[0].floor = new int[] { 0, 0, 0, 0, 0, 1 };
-        for (int i = 0; i < Constants.numColors; i++)
-            game.players[0].grid[4, i] = 1;
+        // for (int i = 0; i < Constants.numColors; i++)
+        //     game.players[0].grid[4, i] = 1;
 
         game.players[1].score = 100;
         game.players[1].floor = new int[] { 0, 0, 0, 0, 0, 0 };
@@ -172,9 +278,119 @@ public class Game
         return game;
     }
 
+    public static Game LoadCustomGame()
+    {
+        Game game = new(2);
+        game.bag = new int[] { 0, 0, 0, 0, 0, };
+        game.discarded = new int[] { 9, 8, 10, 8, 12, };
+        game.factories = new int[][]{
+            new int[]{ 0, 0, 1, 1, 2, },
+            new int[]{ 0, 2, 1, 0, 1, },
+            new int[]{ 2, 0, 1, 0, 1, },
+            new int[]{ 0, 2, 0, 2, 0, },
+            new int[]{ 0, 1, 2, 1, 0, },
+            new int[]{ 0, 0, 0, 0, 0, 1},
+        };
+        game.players = new Player[]{
+            new Player(){
+                score = 27,
+                line = new int[,] {
+                    { 0, 0, 0, 0, 0, },
+                    { 0, 0, 0, 0, 0, },
+                    { 2, 0, 0, 0, 0, },
+                    { 0, 0, 0, 0, 0, },
+                    { 0, 0, 0, 3, 0, },
+                },
+                grid = new int[,] {
+                    { 1, 1, 1, 1, 0, },
+                    { 1, 1, 1, 0, 0, },
+                    { 0, 1, 0, 1, 0, },
+                    { 1, 1, 1, 0, 0, },
+                    { 1, 0, 0, 0, 0, },
+                },
+                floor = new int[] { 0, 0, 0, 0, 0, 0, },
+            },
+            new Player(){
+                score = 29,
+                line = new int[,] {
+                    { 0, 0, 0, 0, 0, },
+                    { 0, 0, 0, 0, 0, },
+                    { 0, 1, 0, 0, 0, },
+                    { 2, 0, 0, 0, 0, },
+                    { 0, 0, 0, 0, 0, },
+                },
+                grid = new int[,] {
+                    { 1, 1, 1, 1, 0, },
+                    { 0, 1, 1, 1, 1, },
+                    { 0, 1, 1, 0, 0, },
+                    { 0, 1, 0, 0, 0, },
+                    { 0, 1, 0, 0, 0, },
+                },
+                floor = new int[] { 0, 0, 0, 0, 0, 0, },
+            },
+        }; return game;
+    }
+
+
+    public static string ToScript(Game g)
+    {
+        string str = $"Game game = new({g.numPlayers});\n" +
+        "game.bag = new int[] { ";
+        for (int i = 0; i < Constants.numColors; i++)
+            str += $"{g.bag[i]}, ";
+        str += "};\n" + "game.discarded = new int[] { ";
+        for (int i = 0; i < Constants.numColors; i++)
+            str += $"{g.discarded[i]}, ";
+        str += "};\n" + "game.factories = new int[][]{\n";
+        for (int i = 0; i < g.numFactories + 1; i++)
+        {
+            str += "    new int[]{ ";
+            for (int j = 0; j < Constants.numColors; j++)
+                str += $"{g.factories[i][j]}, ";
+            if (i == g.numFactories)
+                str += $"{g.factories[i][(int)Tiles.FIRST_MOVE]}";
+            str += "},\n";
+        }
+        str += "};\n" + "game.players = new Player[]{\n";
+        for (int i = 0; i < g.numPlayers; i++)
+        {
+            str += "    new Player(){\n";
+            str += $"        score = {g.players[i].score},\n";
+            str += "        line = new int[,] {\n";
+            for (int row = 0; row < Constants.numRows; row++)
+            {
+                str += "            { ";
+                for (int col = 0; col < Constants.numCols; col++)
+                    str += $"{g.players[i].line[row, col]}, ";
+                str += "},\n";
+            }
+            str += "        },\n";
+            str += "        grid = new int[,] {\n";
+            for (int row = 0; row < Constants.numRows; row++)
+            {
+                str += "            { ";
+                for (int col = 0; col < Constants.numCols; col++)
+                    str += $"{g.players[i].grid[row, col]}, ";
+                str += "},\n";
+            }
+            str += "        },\n";
+            str += "        floor = new int[] { ";
+            for (int j = 0; j < Constants.numColors + 1; j++)
+                str += $"{g.players[i].floor[j]}, ";
+            str += "},\n";
+            str += "    },\n";
+        }
+        str += "};\n";
+
+        return str;
+    }
+
+
     public static Game GenerateEndedMoveGame()
     {
         Game game = new(2);
+        game.bag = new int[] { 0, 0, 0, 0, 0 };
+        game.discarded = new int[] { 15, 15, 15, 15, 15 };
         game.factories = new int[][]{
             new int[]{ 0, 0, 0, 0, 0, 0 },
             new int[]{ 0, 0, 0, 0, 0, 0 },
@@ -183,8 +399,7 @@ public class Game
             new int[]{ 0, 0, 0, 0, 0, 0 },
             new int[]{ 0, 0, 0, 0, 0, 0 },
         };
-        game.bag = new int[] { 0, 0, 0, 0, 0 };
-        game.discarded = new int[] { 15, 15, 15, 15, 15 };
+
 
         // game.players[0].line[1] = new int[] { 0, 0, 0, 0, 0 };
         // game.players[0].score = 100;
@@ -256,6 +471,38 @@ public class Game
         }
     }
 
+    // convert my Print() method to ToString()
+    public override string ToString()
+    {
+        string str = $"Round: {roundIdx} ({step})\n" +
+            $"Active player: {activePlayer}";
+        // print factories
+        for (int factoryIdx = 0; factoryIdx < numFactories + 1; factoryIdx++)
+        {
+            str += $"\nFactory {factoryIdx}: ";
+            for (int color = 0; color < Constants.numColors; color++)
+                str += $"{factories[factoryIdx][color]} ";
+            if (factoryIdx == CENTER)
+                str += $"{factories[CENTER][(int)Tiles.FIRST_MOVE]}";
+        }
+        // print bag
+        str += "\nBag: ";
+        for (int i = 0; i < Constants.numColors; i++)
+            str += $"{bag[i]} ";
+        str += "\n";
+        // print discarded
+        str += "Discarded: ";
+        for (int i = 0; i < Constants.numColors; i++)
+            str += $"{discarded[i]} ";
+        // print players
+        for (int i = 0; i < numPlayers; i++)
+        {
+            str += $"\nPlayer {i}: -----------------\n";
+            str += players[i].ToString();
+        }
+        return str;
+    }
+
     public List<GameAction> GetPossibleActions()
     {
         List<GameAction> actions = new();
@@ -275,28 +522,7 @@ public class Game
         return actions;
     }
 
-
     public GameAction GetRandomAction()
-    {
-        int tries;
-        for (tries = 0; tries < 100_000; tries++)
-        {
-            int factoryIdx = rng.Next(0, numFactories + 1);
-            int color = rng.Next(0, Constants.numColors + 1);
-            int row = rng.Next(0, Constants.numRows + 1);
-
-            if (IsValid(factoryIdx, color, row))
-            {
-                int numTiles = factories[factoryIdx][color];
-                bool isFirst = factoryIdx == CENTER && factories[CENTER][(int)Tiles.FIRST_MOVE] > 0;
-                return new GameAction(factoryIdx, color, row, numTiles, isFirst, activePlayer);
-            }
-        }
-        Debug.Assert(true, "No valid action found");
-        return null;
-    }
-
-    public GameAction GetRandomAction2()
     {
         GameUtils.Shuffle<int>(rng, factoryIdxArray);
         GameUtils.Shuffle<int>(rng, colorIdxArray);
@@ -311,7 +537,11 @@ public class Game
                         bool isFirst = factoryIdx == CENTER && factories[CENTER][(int)Tiles.FIRST_MOVE] > 0;
                         return new GameAction(factoryIdx, color, row, numTiles, isFirst, activePlayer);
                     }
-        Debug.Assert(true, "No valid action found");
+        if (factories[CENTER][(int)Tiles.FIRST_MOVE] > 0)
+            return new GameAction(CENTER, (int)Tiles.FIRST_MOVE,
+                (int)Rows.FLOOR, 1, true, activePlayer);
+
+        Debug.Assert(false, "No valid action found");
         return null;
     }
 
@@ -323,7 +553,6 @@ public class Game
             scores[i] = players[i].score;
         return scores;
     }
-
 
     public void FillFactories()
     {
@@ -374,7 +603,8 @@ public class Game
         Array.Sort(keys, factories);
 
         // update hash
-        factoryHash = GetHash();
+        // identifies the random unique state of the factories
+        chanceHash = roundIdx == 0 ? 0 : GetHash();
     }
 
     public bool Play(ref GameAction action)
@@ -411,7 +641,7 @@ public class Game
         // update active player 
         activePlayer = (activePlayer + 1) % numPlayers;
 
-        if (IsRoundOver())
+        if (IsFactoryEmpty())
         {
             roundIdx++;
             // for each player, update score
@@ -440,13 +670,11 @@ public class Game
         return false;
     }
 
-    public bool IsTerminal() => IsRoundOver();
+    // public bool IsTerminal() => IsRoundOver();
+    public bool IsTerminal() => IsGameOver();
 
-    public bool IsRoundOver()
+    bool IsFactoryEmpty()
     {
-        if (step > MAX_STEPS)  // stalemate
-            return true;
-
         // check if factories are empty
         for (int factoryIdx = 0; factoryIdx < numFactories + 1; factoryIdx++)
             for (int color = 0; color < Constants.numColors; color++)
@@ -457,11 +685,11 @@ public class Game
 
     public bool IsGameOver()
     {
-        // check if any player has a full row
-        if (IsRoundOver() == false)
-            return false;
         if (step > MAX_STEPS)
             return true;
+        // check if any player has a full row
+        if (IsFactoryEmpty() == false)
+            return false;
 
         foreach (Player player in players)
             for (int row = 0; row < Constants.numRows; row++)
@@ -493,10 +721,10 @@ public class Game
             return false;
         // check if line already has any another color 
         for (int i = 0; i < Constants.numColors; i++)
-            if ((i != color) && (player.line[row][i] > 0))
+            if ((i != color) && (player.line[row, i] > 0))
                 return false;
         // check if row is full
-        if (player.line[row][color] > row)
+        if (player.line[row, color] > row)
             return false;
         // check if grid is full
         if (player.grid[row, Player.ColorToCol(row, color)] > 0)
@@ -559,6 +787,10 @@ public class GameAction
             Console.WriteLine(str);
         return str;
     }
+
+    // convert Print to ToString
+    public override string ToString() => Print("", false);
+
 }
 
 public class Player
@@ -567,14 +799,19 @@ public class Player
     public int score = 0;
     // q: how to define a int matrix?
     public int[,] grid = new int[Constants.numColors, Constants.numColors];
-    public int[][] line = new int[Constants.numRows + 1][];
+    public int[,] line = new int[Constants.numRows, Constants.numColors];
     public int[] floor = new int[Constants.numColors + 1]; // first = NONE = 5
 
 
     public Player()
+    { }
+
+    public Player(Player player)
     {
-        for (int i = 0; i < Constants.numRows; i++)
-            line[i] = new int[Constants.numColors];
+        score = player.score;
+        grid = (int[,])player.grid.Clone();
+        line = (int[,])player.line.Clone();
+        floor = (int[])player.floor.Clone();
     }
 
     public bool SanityCheck()  // true if valid state
@@ -586,15 +823,15 @@ public class Player
                 if ((grid[row, col] < 0) || (grid[row, col] > 1))
                     return false;
                 // pretend col is color
-                if (grid[row, ColorToCol(row, col)] > 0 && line[row][col] > 0)
+                if (grid[row, ColorToCol(row, col)] > 0 && line[row, col] > 0)
                     return false;
             }
         // check if line is full
-        foreach (var lineRow in line)
+        for (int row = 0; row < Constants.numRows; row++)
         {
             bool isFull = false;
             for (int col = 0; col < Constants.numCols; col++)
-                if (lineRow[col] > 1)
+                if (line[row, col] > 1)
                 {
                     if (isFull) return false;  // more than one color
                     isFull = true;
@@ -622,13 +859,37 @@ public class Player
         for (int row = 0; row < Constants.numRows; row++)
         {
             for (int col = 0; col < Constants.numCols; col++)
-                Console.Write(line[row][col] + " ");
+                Console.Write(line[row, col] + " ");
             Console.WriteLine();
         }
         Console.WriteLine("Floor:");
         for (int j = 0; j < Constants.numColors + 1; j++)
             Console.Write(floor[j] + " ");
         Console.WriteLine();
+    }
+
+    // convert Print() method to ToString()
+    public override string ToString()
+    {
+        string str = $"Score: {score}\n" +
+            "Grid:\n";
+        for (int row = 0; row < Constants.numRows; row++)
+        {
+            for (int col = 0; col < Constants.numCols; col++)
+                str += $"{grid[row, col]} ";
+            str += "\n";
+        }
+        str += "Line:\n";
+        for (int row = 0; row < Constants.numRows; row++)
+        {
+            for (int col = 0; col < Constants.numCols; col++)
+                str += $"{line[row, col]} ";
+            str += "\n";
+        }
+        str += "Floor:\n";
+        for (int j = 0; j < Constants.numColors + 1; j++)
+            str += $"{floor[j]} ";
+        return str;
     }
 
     public int[] UpdateRound()
@@ -638,11 +899,11 @@ public class Player
         for (int row = 0; row < Constants.numRows; row++)
         {
             for (int color = 0; color < Constants.numColors; color++)
-                if (line[row][color] > row)
+                if (line[row, color] > row)
                 {
                     int col = ColorToCol(row, color);
                     grid[row, col] = 1;
-                    line[row][color] = 0;
+                    line[row, color] = 0;
                     discard[color] += row;
                     ScoreTile(row, col);
                     break;
@@ -681,12 +942,12 @@ public class Player
         }
     }
 
-    public void Play(ref GameAction GameAction)
+    public void Play(ref GameAction action)
     {
-        int color = GameAction.color;
-        int row = GameAction.row;
-        int numTiles = GameAction.numTiles;
-        bool isFirst = GameAction.isFirst;
+        int color = action.color;
+        int row = action.row;
+        int numTiles = action.numTiles;
+        bool isFirst = action.isFirst;
 
         if (isFirst)
             floor[(int)Tiles.FIRST_MOVE] = 1;
@@ -699,14 +960,14 @@ public class Player
             return;
         }
 
-        int dropTiles = numTiles - (row + 1 - line[row][color]);
+        int dropTiles = numTiles - (row + 1 - line[row, color]);
         if (dropTiles > 0)
         {   // fill line and drop excess tiles to floor
             floor[color] += dropTiles;
-            line[row][color] = row + 1;
+            line[row, color] = row + 1;
         }
         else
-            line[row][color] += numTiles;
+            line[row, color] += numTiles;
     }
 
     public int[] CountTotalTiles()
@@ -722,7 +983,7 @@ public class Player
         // from line
         for (int row = 0; row < Constants.numRows; row++)
             for (int col = 0; col < Constants.numCols; col++)
-                total[col] += line[row][col];
+                total[col] += line[row, col];
         return total;
     }
 
