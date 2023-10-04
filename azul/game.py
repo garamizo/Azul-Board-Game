@@ -16,13 +16,14 @@ from ai_wrapper import MCTS_node
 DELAY_ANIMATION = 250
 DELAY_AI_MOVE = 4000
 AI_MOVE = pygame.USEREVENT + 1
-COLOR_NAME = {1: "BLUE", 2: "YELLOW", 3: "RED", 4: "BLACK", 5: "WHITE"}
+COLOR_NAME = {1: "BLUE", 2: "YELLOW", 3: "RED",
+              4: "BLACK", 5: "WHITE", 6: "FIRST"}
 ROW_NAME = {-1: "FLOOR", 0: "FIRST", 1: "SECOND",
             2: "THIRD", 3: "FOURTH", 4: "FIFTH"}
 
 
 class Azul:
-    isHumanPlayer = [True, False]
+    isHumanPlayer = [True, False, False]
     aiEngine = None
 
     def __init__(self):
@@ -55,7 +56,7 @@ class Azul:
         self.FONT_HELP_MESSAGE = pygame.font.SysFont(None, 40, bold=False)
 
         self.logic = Table(len(self.isHumanPlayer))
-        self.logic.core = self.logic.core.LoadCustomGame()
+        # self.logic.core = self.logic.core.LoadCustomGame()
 
         # self.logic.reset()
         obs = self.logic.get_observation()
@@ -66,8 +67,8 @@ class Azul:
         self.setup(obs)
         # print(obs)
 
-        # self.aiEngine = MCTS_node(self.logic)
-        self.aiEngine = [None] * self.numPlayers
+        self.aiEngine = MCTS_node(self.logic)
+        # self.aiEngine = [None] * self.numPlayers
 
         # selected commands
         self.playLineIdx, self.playIsFirst, self.playMark, \
@@ -80,6 +81,9 @@ class Azul:
     @property
     def numPlayers(self):
         return self.logic.numPlayers
+
+    def is_game_over(self):
+        return self.logic.is_game_over()
 
     def setup(self, obs):
 
@@ -116,7 +120,7 @@ class Azul:
         self.center = Center(obs['center'], s0, sz)
 
     def main_loop(self):
-        while True:
+        while not self.is_game_over():
             self._handle_input()
             self._process_game_logic()
             self._draw()
@@ -182,19 +186,25 @@ class Azul:
                 self.helpMessage = f"Please wait for AI's turn"
                 self._draw()
 
-                t0 = pygame.time.get_ticks()
-                MIN_ROLLS, rolls = 4000, 0
-                with tqdm(total=MIN_ROLLS) as pbar:
-                    while pygame.time.get_ticks() - t0 < 4_000:
-                        self.process_AI(1)
-                        numRolls = self.aiEngine[self.activePlayer].numRolls
-                        pbar.update(numRolls - rolls)
-                        rolls = numRolls
+                # t0 = pygame.time.get_ticks()
+                # MIN_ROLLS, rolls = 4000, 0
+                # with tqdm(total=MIN_ROLLS) as pbar:
+                # while pygame.time.get_ticks() - t0 < 4_000:
+                self.process_AI(4)
+                # numRolls = self.aiEngine[self.activePlayer].numRolls
+                # pbar.update(numRolls - rolls)
+                # rolls = numRolls
 
-                actionIdx = self.aiEngine[self.activePlayer].get_best_action()
+                # actionIdx = self.aiEngine[self.activePlayer].get_best_action()
+
+                # if current player is first of the non-human players
+                # if self.isHumanPlayer.index(False) == self.activePlayer:
+                #     self.playFactoryIdx, self.playMark, self.playLineIdx = \
+                #         self.logic.get_egreedy_move(0.0)
+                #     numRolls, numWins = 1, -1
+                # else:
                 self.playFactoryIdx, self.playMark, self.playLineIdx, \
-                    numRolls, numWins = self.aiEngine[self.activePlayer].get_action(
-                        actionIdx)
+                    numRolls, numWins = self.aiEngine.get_action()
 
                 print((f"AI {self.logic.activePlayer + 1} action:"
                        f"factoryIdx: {self.playFactoryIdx}, "
@@ -231,30 +241,26 @@ class Azul:
                 print("Invalid move")
 
     def process_AI(self, timeout):
-        numAIPlayers = len(
-            [1 for isHuman in self.isHumanPlayer if isHuman == False])
-        if numAIPlayers == 0:
-            return
+        # numAIPlayers = len(
+        #     [1 for isHuman in self.isHumanPlayer if isHuman == False])
+        # if numAIPlayers == 0:
+        #     return
 
-        for i, isHuman in enumerate(self.isHumanPlayer):
-            if isHuman:
-                continue
+        # for i, isHuman in enumerate(self.isHumanPlayer):
+        #     if isHuman:
+        #         continue
 
-            # load for the first time
-            if self.aiEngine[i] is None:
-                self.aiEngine[i] = MCTS_node(self.logic)
-                self.aiEngine[i].core.rootPlayer = i
+        #     # load for the first time
+        #     if self.aiEngine[i] is None:
+        #         self.aiEngine[i] = MCTS_node(self.logic)
+        #         self.aiEngine[i].core.rootPlayer = i
 
-        #
-            self.aiEngine[i] = self.aiEngine[i].search_node(
-                self.logic, maxDepth=self.logic.numPlayers)
+        #     self.aiEngine[i] = self.aiEngine[i].search_node(
+        #         self.logic, maxDepth=self.logic.numPlayers)
 
-            if self.aiEngine[i] == None:
-                print("New state not found. Creating new tree...")
-                self.aiEngine[i] = MCTS_node(self.logic)
-
-            self.aiEngine[i].grow_while(
-                timeout=timeout/numAIPlayers, maxRolls=50_000)
+        self.aiEngine = self.aiEngine.search_node(self.logic, maxDepth=4)
+        self.aiEngine.grow_while(
+            timeout=timeout, maxRolls=50_000)
 
     def delay(self, secs):
         t0 = pygame.time.get_ticks()
@@ -262,6 +268,7 @@ class Azul:
         pygame.time.delay(int(secs * 1000) - (pygame.time.get_ticks() - t0))
 
     def wait_for_click(self):
+        # return
         while True:
             self.process_AI(0.1)
             for event in pygame.event.get():
@@ -341,7 +348,7 @@ class Azul:
         )
         self.wait_for_click()
         print("Game over. Closing...")
-        quit()
+        # quit()
 
     def animate_new_round(self):
         self.setup(self.obsOld)
@@ -414,6 +421,7 @@ class Azul:
                 except IndexError:
                     print(self.logic.get_printable())
                     print("\n\tfactory cleared\n")
+                    self.playFactoryIdx = None
 
         imgMessage = self.FONT_DISPLAY_MESSAGE.render(
             self.displayMessage, True, YELLOW, BLACK)
@@ -443,3 +451,7 @@ class Azul:
 
         pygame.display.flip()
         self.clock.tick(20)
+
+
+if __name__ == "__main__":
+    Azul().main_loop()

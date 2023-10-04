@@ -6,7 +6,7 @@ if True:
     import sys
     sys.path.append(r"AzulLibrary/bin/Release/net6.0")
     clr.AddReference('AzulLibrary')  # add .dll file
-    from Azul import Game, GameAction
+    from Azul import Game, Move
     from Ai import MCTS
 
 NUM_ROWS = 5
@@ -32,10 +32,10 @@ class Table:
         return self.core.numPlayers
 
     def step_move(self, color, factoryIdx, row):
-        assert color > 0 and color <= NUM_COLORS, "Error"
+        assert color > 0 and color <= NUM_COLORS+1, "Error"
         self.core.Play(
-            GameAction(self.numFactories if factoryIdx < 0 else factoryIdx,
-                       color-1, NUM_ROWS if row < 0 else row, self.core))
+            Move(self.numFactories if factoryIdx < 0 else factoryIdx,
+                 color-1, NUM_ROWS if row < 0 else row, self.core))
 
     def get_printable(self):
         return Game.ToScript(self.core)
@@ -93,6 +93,9 @@ class Table:
 
     def is_game_over(self):
         return self.core.IsGameOver()
+
+    def get_egreedy_move(self, epsilon=0.1):
+        return Table.get_action(self.core.GetEGreedyMove(epsilon), self.core)
 
     @staticmethod
     def get_action(a, gameCore):

@@ -124,6 +124,19 @@ def mse(img1, img2):
     return mse
 
 
+"""
+    get_boards: 
+
+    Input:
+        - img: BGR image of board
+        - plot: whether to plot intermediate results
+    Output:
+        - imgBoard: list of N BGR images of each board
+        - maskMerge: mask of all boards
+        - matrices: list of N matrices that transform each board to C1
+"""
+
+
 def get_boards(img, plot=False):
     imgClean = img.copy()
     masks, boxes = segment(img, plot)
@@ -145,9 +158,10 @@ def get_boards(img, plot=False):
     imgBoard, matrices = [], []
     for mask, box in zip(masks, boxes):
         src = corners_from_mask(np.uint8(mask))
+        corners = src * [wf/w1, hf/h1]  # in raw coordinates
         # raw to C1'
         matrix = cv2.getPerspectiveTransform(
-            np.float32(src * [wf/w1, hf/h1]), dst)
+            np.float32(corners), dst)
         frame = cv2.warpPerspective(
             imgClean, matrix, (FSZ, FSZ), borderMode=cv2.BORDER_REPLICATE)
 
@@ -159,13 +173,15 @@ def get_boards(img, plot=False):
         frame = cv2.warpPerspective(
             imgClean, matrix3 @ matrix2 @ matrix, (FSZ2, FSZ2), borderValue=BORDER_COLOR)
 
-        c0 = src.mean(0)
-        wid = np.sum((src - src[[1, 2, 3, 0]])**2, 1).mean()
+        c0 = corners.mean(0).astype(int)
+        wid = np.mean(np.sum(np.diff(corners, axis=0)**2, 1)**0.5).astype(int)
+        # print(c0, wid)
 
-        upVector = np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1]-wid/50, 1]) - \
-            np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1], 1])
-        # upVector = matrix3 @ matrix2 @ matrix @ [c0[0], c0[1], 1] - \
-        #     matrix3 @ matrix2 @ matrix @ [c0[0], c0[1]-wid/20, 1]
+        # upVector = np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1]-wid//30, 1]) - \
+        #     np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1], 1])
+
+        upVector = matrix3 @ matrix2 @ matrix @ [c0[0], c0[1]-wid/30, 1] - \
+            matrix3 @ matrix2 @ matrix @ [c0[0], c0[1], 1]
 
         valMatch = mse(frame, _template0)
         if plot:
@@ -176,9 +192,11 @@ def get_boards(img, plot=False):
                     3*sz), color=2, thickness=-1)
             cv2.putText(frame, f"{int(valMatch)}", (int(10*sz), int(40*sz)),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2*sz, (50, 50, 255), int(3*sz))
+            cv2.line(img, [c0[0], c0[1]-wid//30], [c0[0], c0[1]],
+                     color=(255, 0, 0), thickness=11)
 
         imgBoard.append(frame)
-        matrices.append(upVector)
+        matrices.append(upVector[:2])
 
     return imgBoard, maskMerge, matrices
 
