@@ -3,6 +3,7 @@ from utils import load_sprite
 import pygame
 from pygame.transform import scale
 import numpy as np
+# from logic_wrapper import
 
 SIZE_SCREEN = Vector2([1280, 720])
 SIZE_BOARD = Vector2([600, 400])
@@ -14,6 +15,9 @@ BEIGE = (240, 186, 140)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
 YELLOW = (255, 255, 50)
+
+NUM_ROWS = 5
+EMPTY_TILE = -1
 
 
 class GameObject:
@@ -29,6 +33,7 @@ class GameObject:
 
 
 class Board(GameObject):
+
     def __init__(self, name, content, position, size=(600, 400), zoom=1.0, isHuman=False):  # 900x600
         super().__init__(
             position,
@@ -59,6 +64,15 @@ class Board(GameObject):
         w = (90*2/3) * self.zoom
         self.rect_floor = pygame.Rect(p0, Vector2(w*7, w))
 
+        # rect for grid
+        p0 = self.position + Vector2(470-900/2, 15-600/2)*2/3 * self.zoom
+        w = (84*2/3) * self.zoom
+        self.rect_grid = []
+        for iy in range(5):
+            for ix in range(5):
+                p1 = p0 + Vector2(ix * w, iy * w * 1.03)
+                self.rect_grid.append(pygame.Rect(p1, Vector2(w, w)))
+
     def draw(self, surface):
         super().draw(surface)
 
@@ -67,20 +81,20 @@ class Board(GameObject):
         w = (85*2/3) * self.zoom
         for iy, trow in enumerate(self.content['grid']):
             for ix, t in enumerate(trow):
-                if t != 0:
-                    pos = p0 + Vector2(ix, iy) * w
-                    graph = Tile(pos, t, zoom=self.zoom)
-                    graph.draw(surface)
+                # if t != 0:
+                pos = p0 + Vector2(ix, iy) * w
+                graph = Tile(pos, t, zoom=self.zoom)
+                graph.draw(surface)
 
         # draw line
         p0 = self.position + Vector2(390-900/2, 60-600/2)*2/3 * self.zoom
         w = (85*2/3) * self.zoom
         for iy, trow in enumerate(self.content['line']):
             for ix, t in enumerate(trow):
-                if t != 0:
-                    pos = p0 + Vector2(-ix, iy) * w
-                    graph = Tile(pos, t, zoom=self.zoom)
-                    graph.draw(surface)
+                # if t != 0:
+                pos = p0 + Vector2(-ix, iy) * w
+                graph = Tile(pos, t, zoom=self.zoom)
+                graph.draw(surface)
 
         # draw floor
         p0 = self.position + Vector2(50-900/2, 550-600/2)*2/3 * self.zoom
@@ -108,31 +122,35 @@ class Board(GameObject):
         # assume is active player, zoom=1
         # return mark and numMark. If empty, return 0, 0
 
-        lineIdx = None
+        # click floor
         if self.rect_floor.collidepoint(event.pos):
-            lineIdx = -1
-        else:
-            # check for click on lines
-            for i, rect in enumerate(self.rect_line):
-                if rect.collidepoint(event.pos):
-                    lineIdx = i
-                    break
+            return 'row', NUM_ROWS
 
-        # print(f"Board: {lineIdx=}")
-        return lineIdx
+        # check for click on lines
+        for i, rect in enumerate(self.rect_line):
+            if rect.collidepoint(event.pos):
+                return 'row', i
+
+        for i in range(len(self.rect_grid)):
+            if self.rect_grid[i].collidepoint(event.pos):
+                row = i // NUM_ROWS
+                col = i % NUM_ROWS
+                return 'colIdx', (row, col)
+        return None, None
 
 
 class Tile(GameObject):
     idx_to_path = {
-        -1: "tile_first.png",
-        1: "tile_blue.png",
-        2: "tile_yellow.png",
-        3: "tile_red.png",
-        4: "tile_black.png",
-        5: "tile_white.png"
+        EMPTY_TILE: "",
+        0: "tile_blue.png",
+        1: "tile_yellow.png",
+        2: "tile_red.png",
+        3: "tile_black.png",
+        4: "tile_white.png",
+        5: "tile_first.png",
     }
 
-    def __init__(self, position, mark=1, size=Vector2(50, 50), zoom=1.0):
+    def __init__(self, position, mark=EMPTY_TILE, size=Vector2(50, 50), zoom=1.0):
         super().__init__(
             position,
             scale(load_sprite(self.idx_to_path[mark]), size),
@@ -174,16 +192,29 @@ class Factory(GameObject):
 
     def mouse_callback(self, event):
         # return mark and numMark. If empty, return None, None
+        # if move.isRegularPhase == False:
+        #     return move
+
         if len(self.tiles) == 0:
-            mark, numMark = None, None
+            return None
         else:
             pos = event.pos - self.position
             tileIdx = (pos[0] > 0)*1 + (pos[1] > 0)*2
             mark = self.content[tileIdx]
             numMark = self.content.count(mark)
 
+        return mark
+
+        # if move.color == mark and move.factoryIdx == self.idx and move.factoryIdxOn:
+        #     move.colorOn = move.factoryIdxOn = False
+
+        # else:
+        #     move.colorOn = move.factoryIdxOn = True
+        #     move.color = mark
+        #     move.factoryIdx = self.idx
+
         # print(f"Factory: {mark=}, {numMark=}")
-        return mark, numMark
+        # return move
 
 
 class Center(GameObject):
@@ -212,11 +243,11 @@ class Center(GameObject):
             tile.draw(surface)
 
     def mouse_callback(self, event):
-        # return mark and numMark. If empty, return 0, 0
+        # return factoryIdx and color. If empty, return None, None
         isFirst = self.content.count(-1) > 0
 
         if len(self.tiles) == 0:
-            mark, numMark = None, None
+            return None
         else:
             pos = (event.pos - (self.position - self.size/2))
             ixy = np.floor(pos * 10 / self.size.x)
@@ -228,5 +259,14 @@ class Center(GameObject):
                 mark = self.content[tileIdx]
                 numMark = self.content.count(mark)
 
-        # print(f"Center: {mark=}, {numMark=}, {isFirst=}")
-        return mark, numMark, isFirst
+        return mark
+
+        # if move.color == mark and move.factoryIdx == -1 and move.factoryIdxOn:  # toggle
+        #     move.colorOn = move.factoryIdxOn = False
+        # else:
+        #     move.colorOn = move.factoryIdxOn = True
+        #     move.color = mark
+        #     move.factoryIdx = -1
+
+        # # print(f"Center: {mark=}, {numMark=}, {isFirst=}")
+        # return move

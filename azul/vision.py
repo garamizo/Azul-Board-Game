@@ -1,3 +1,6 @@
+import torch
+from torchvision import transforms
+from tileclassifier.model import build_model
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -5,9 +8,10 @@ import sympy
 from warnings import warn
 import matplotlib.pyplot as plt
 
-model = YOLO('runs/segment/yolov8n_azul15/weights/best.pt')
+MODEL_PATH = '/home/garamizo/Azul-Board-Game/outputs/model_pretrained_True.pth'
+model = YOLO('/home/garamizo/Azul-Board-Game/runs/segment/yolov8n_azul15/weights/best.pt')
 # sz=2500x2500, border=0
-PATH_TEMPLATE = 'assets/templates/board.png'
+PATH_TEMPLATE = '/home/garamizo/Azul-Board-Game/assets/templates/board.png'
 _template = cv2.imread(PATH_TEMPLATE)
 
 RECT_SCORE = [v/2500 for v in (314-150, 219-150, 2478-314, 914-219)]
@@ -77,6 +81,566 @@ _features0 = FeatureExtraction(template, isTemplate=True)
 _template0 = cv2.resize(_template, [640, 640])
 
 
+def crop(img, rect):
+    return img[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2], :]
+
+
+def tile(imgs, shape=None, grid=0):
+    scale = True
+    if shape == None:
+        shape = imgs[0].shape
+        scale = False
+
+    numImgs = len(imgs)
+    nx = int(np.ceil(np.sqrt(numImgs)))
+    ny = int(np.ceil(numImgs / nx))
+    if scale:
+        imgs = [cv2.resize(img, shape[:2]) for img in imgs]
+    imgs = imgs + [np.zeros(shape, np.uint8)] * (nx*ny - numImgs)
+    tiles = np.reshape(imgs, [ny, nx, *shape])
+
+    # for i in range(tiles.shape[3]):
+    tiles[:, :, :grid, :, :] = 255
+    tiles[:, :, :, :grid, :] = 255
+    tiles[:, :, shape[0]-grid:, :, :] = 255
+    tiles[:, :, :, shape[1]-grid:, :] = 255
+
+    tiles = tiles.swapaxes(1, 2).reshape(shape[0]*ny, shape[1]*nx, shape[2])
+    return tiles
+
+
+class BoardDetector_YOLO:
+    PATH_MODEL = 'runs/segment/yolov8n_azul15/weights/best.pt'
+    PRED_CONF = 0.75  # only accept detections with confidence > 0.75
+    PAD_BORDER = 0
+    # shape of segmentation mask (fixed to YOLOv8-seg model)
+    SHAPE_OUT = (1000, 1000)  # shape of output boards
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        self.model = YOLO(self.PATH_MODEL)
+
+    def get_matrix(self, img, plot=False):
+        if plot:
+            self.imgDraw = img.copy()
+
+        h, w, c = img.shape
+        masks, boxes, confs = self.segment(img)
+
+        dst = np.float32([
+            [self.PAD_BORDER, self.PAD_BORDER],
+            [self.SHAPE_OUT[1]-self.PAD_BORDER, self.PAD_BORDER],
+            [self.SHAPE_OUT[1]-self.PAD_BORDER, self.SHAPE_OUT[0]-self.PAD_BORDER],
+            [self.PAD_BORDER, self.SHAPE_OUT[0]-self.PAD_BORDER]
+        ])
+        for i, (mask, box, conf) in enumerate(zip(masks, boxes, confs)):
+            shape_mask = mask.shape
+            corners = polygon_from_mask(mask, numCorners=4) * \
+                [w / shape_mask[1], h / shape_mask[0]]
+
+            # apply perspective transf given polygon corners
+            matrix = cv2.getPerspectiveTransform(np.float32(corners), dst)
+
+            if plot:
+                cv2.putText(self.imgDraw, f"{i}", tuple(box[:2]), cv2.FONT_HERSHEY_SIMPLEX,
+                            8, (0, 0, 255), 20)
+
+                maskUpsample = cv2.resize(
+                    mask, img.shape[1::-1], interpolation=cv2.INTER_NEAREST).astype(bool)
+                self.imgDraw[maskUpsample, 0] = 255
+                cv2.polylines(self.imgDraw, [np.int32(corners)],
+                              True, color=(0, 0, 255), thickness=10)
+            yield matrix
+
+    def detect(self, img, plot=False):
+        imgs = []
+        for matrix in self.get_matrix(img, plot):
+            imgs.append(cv2.warpPerspective(
+                img, matrix, self.SHAPE_OUT, borderMode=cv2.BORDER_REPLICATE))
+        return imgs
+
+    def segment(self, img, plot=False):
+        """Compute masks and bounding boxes of board elements
+            Returns:
+                - masks: list of N masks of each board element
+                - boxes: list of N bounding boxes of each board element
+                - confidence: list of N confidence of each board element
+        """
+        results = self.model.predict(
+            source=img, save=False, save_txt=False, conf=self.PRED_CONF, verbose=False)
+
+        if plot:
+            sz = 2 * img.shape[0] / 640
+            class_ids, confidences, boxes = [], [], []
+            for (x, y, x2, y2, conf, id) in results[0].boxes.data:
+                class_ids.append(int(id))
+                confidences.append(float(conf))
+                boxes.append(np.int32([x, y, x2-x, y2-y]))
+
+            colors = [(0, 255, 0), (255, 255, 0), (0, 255, 255), (255, 0, 0)]
+
+            for (classid, confidence, box) in zip(class_ids, confidences, boxes):
+                color = colors[int(classid) % len(colors)]
+                cv2.rectangle(img, box, color, int(2*sz))
+                cv2.rectangle(img, (box[0], box[1] - int(20*sz)),
+                              (box[0] + box[2], box[1]), color, -1)
+                cv2.putText(img, f"{model.names[classid]} {confidence:.2}",
+                            (box[0], box[1] - int(3*sz)), cv2.FONT_HERSHEY_SIMPLEX, 0.6*sz, (255, 255, 255), int(2*sz))
+
+        return [np.uint8(m) for m in results[0].masks.data], \
+            [np.int32(np.round([b[0], b[1], b[2]-b[0], b[3]-b[1]])) for b in results[0].boxes.data], \
+            [float(v[4]) for v in results[0].boxes.data]
+
+
+class BoardDetector_ORB:
+    PATH_TEMPLATE = 'assets/templates/board.png'
+    SHAPE_OUT = (1000, 1000)
+    MIN_MATCHES = 15
+    PATCH_SIZE = 51
+    N_FEATURES = 2_000
+    index_params = dict(
+        algorithm=6,  # FLANN_INDEX_LSH
+        table_number=6,
+        key_size=10,
+        multi_probe_level=2)
+    search_params = dict(checks=50)
+    COLOR_BACKGROUND = (185, 197, 203)
+
+    @property
+    def PAD_BORDER(self): return 2 * self.PATCH_SIZE
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        # init feature extractor ============================
+        # tested with 1000x1000
+        self.orb = cv2.ORB_create(
+            nfeatures=self.N_FEATURES,
+            edgeThreshold=self.PATCH_SIZE,
+            patchSize=self.PATCH_SIZE,
+            scoreType=cv2.ORB_HARRIS_SCORE)
+        orbL = cv2.ORB_create(
+            nfeatures=2*self.N_FEATURES,
+            edgeThreshold=self.PATCH_SIZE,
+            patchSize=self.PATCH_SIZE,
+            scoreType=cv2.ORB_HARRIS_SCORE)
+
+        imgTpt = cv2.imread(self.PATH_TEMPLATE)
+        w, h, brd = *self.SHAPE_OUT, self.PAD_BORDER
+        matOrbTpt = cv2.getAffineTransform(
+            np.float32([[0, 0], [imgTpt.shape[0], 0], [0, imgTpt.shape[1]]]),
+            np.float32([[brd, brd], [w-brd, brd], [brd, h-brd]]))
+        self.imgTpt = cv2.warpAffine(imgTpt, matOrbTpt, [w, h],
+                                     borderValue=self.COLOR_BACKGROUND)
+        self.features_tpl = self.detect_features(self.imgTpt, orbL)
+
+        self.flann = cv2.FlannBasedMatcher(
+            self.index_params,
+            self.search_params)
+
+    def draw(self, img, features=None):
+        if features == None:
+            features = self.detect_features(img)
+        return cv2.drawKeypoints(img, features['kps'], 0,
+                                 flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+
+    def get_matrix(self, img, plot=False):
+        features = self.detect_features(img)
+        if plot:
+            self.imgDraw = img.copy()
+            self.imgDraw = self.draw(self.imgDraw, features)
+
+        assert len(features['kps']) > 0, "No features found"
+        pts0, pts1, matches = self.match_features(features, self.features_tpl)
+
+        if plot:
+            self.imgDraw = cv2.drawMatches(img, features['kps'],
+                                           self.imgTpt, self.features_tpl['kps'], matches, None)
+        assert len(pts0) > self.MIN_MATCHES, "Not enough matches"
+
+        return cv2.findHomography(pts0, pts1, cv2.RANSAC, 5.0)[0]
+
+    def detect(self, img, plot=False):
+        return cv2.warpPerspective(
+            img, self.get_matrix(img, plot), self.SHAPE_OUT)
+
+    def match_features(self, features0, features1):
+        LOWES_RATIO = 0.7
+        matches = []  # good matches as per Lowe's ratio test
+        all_matches = self.flann.knnMatch(
+            features0['des'], features1['des'], k=2)
+
+        for m, n in all_matches:
+            if m.distance < LOWES_RATIO * n.distance:
+                matches.append(m)
+
+        matched_pts0, matched_pts1 = [], []
+        for m in matches:
+            matched_pts0.append(features0['kps'][m.queryIdx].pt)
+            matched_pts1.append(features1['kps'][m.trainIdx].pt)
+
+        return np.float32(matched_pts0).reshape(-1, 1, 2), \
+            np.float32(matched_pts1).reshape(-1, 1, 2), matches
+
+    def detect_features(self, img, orb=None):
+        if orb is None:
+            orb = self.orb
+        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        kps, des = orb.detectAndCompute(gray_img, None)
+        return dict(kps=kps, des=des)
+
+
+class SpotObject:
+    def __init__(self, rect, shape, tokenSize):
+        self.rect = rect
+        self.shape = np.array(shape)
+        self.tokenSize = tokenSize
+
+    def __add__(self, other):  # translation
+        return SpotObject(self.rect + np.r_[other, 0, 0], self.shape, self.tokenSize)
+
+    def __mul__(self, other):  # scale
+        return SpotObject(self.rect * np.r_[other, other, other, other], self.shape,
+                          self.tokenSize * np.r_[other, other])
+
+    def draw(self, img):
+        pt0 = self.rect[:2]
+        shapeSafe = np.array([s if s > 1 else 2 for s in self.shape])
+        sz = self.rect[2:] / (shapeSafe[::-1] - 1)
+        corners = np.array(
+            [[-1, -1], [1, -1], [1, 1], [-1, 1]]) * self.tokenSize / 2
+        for iy in range(self.shape[0]):
+            for ix in range(self.shape[1]):
+                # pt = tuple(np.int32(pt0 + sz * [ix, iy]))
+                # cv2.circle(img, pt, 10, (0, 0, 255), -1)
+                pts = np.int32(pt0 + sz * [ix, iy] + corners).reshape(-1, 1, 2)
+                cv2.polylines(img, [pts], True, color=(
+                    255, 255, 255), thickness=1)
+
+    def crop(self, img, idx):
+        rect = self.get_rect(idx)
+        # pt0 = self.rect[:2]
+        # shapeSafe = np.array([s if s > 1 else 2 for s in self.shape])
+        # sz = self.rect[2:] / (shapeSafe[::-1] - 1)
+        # iy, ix = idx
+        # pt0 = tuple(
+        #     np.int32(pt0 + sz * [ix, iy] - self.tokenSize / 2))
+        # pt1 = tuple(np.int32(pt0 + self.tokenSize))
+        return img[rect[1]:rect[3], rect[0]:rect[2]]
+
+    def get_rect(self, idx):
+        pt0 = self.rect[:2]
+        shapeSafe = np.array([s if s > 1 else 2 for s in self.shape])
+        sz = self.rect[2:] / (shapeSafe[::-1] - 1)
+        iy, ix = idx
+        pt0 = tuple(
+            np.int32(pt0 + sz * [ix, iy] - self.tokenSize / 2))
+        pt1 = tuple(np.int32(pt0 + self.tokenSize))
+        return pt0 + pt1
+
+    def get_features(self, im):
+        # assume BGR image
+        hist = cv2.calcHist([im], [0, 1, 2], None, [
+                            4, 4, 4], [0, 256, 0, 256, 0, 256])
+        return hist.reshape(-1) / np.sum(hist)
+
+    def features_from_image(self, img):
+        feat = []
+        for iy in range(self.shape[0]):
+            for ix in range(self.shape[1]):
+                im = self.crop(img, (iy, ix))
+                feat.append(self.get_features(im))
+        return feat
+
+    def get_diff_grid(self, imgDiff):
+        val = np.zeros((self.shape[0], self.shape[1]))
+        for i in range(self.shape[0]):
+            for j in range(self.shape[1]):
+                val[i, j] = self.crop(imgDiff, (i, j)).mean()
+        return val
+
+
+class TileClassifier:
+    IMAGE_SIZE = 34
+    DEVICE = 'cpu'
+    class_names = ['background', 'black', 'blue',
+                   'first', 'red', 'white', 'yellow']
+
+    def __init__(self):
+        # Load the trained model.
+        self.model = build_model(pretrained=False, fine_tune=False,
+                                 num_classes=len(self.class_names))
+        checkpoint = torch.load(
+            MODEL_PATH, map_location=self.DEVICE)
+        print('Loading trained model weights...')
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.eval()
+
+        self.transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((self.IMAGE_SIZE, self.IMAGE_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+
+    def predict(self, image):
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = self.transform(image)
+        image = torch.unsqueeze(image, 0)
+        image = image.to(self.DEVICE)
+
+        # Forward pass throught the image.
+        outputs = self.model(image)
+        probs = torch.nn.functional.softmax(outputs, dim=1)
+        conf, classes = torch.max(probs, 1)
+        outputs = outputs.detach().numpy()
+        names = self.class_names[classes[0]]
+        
+        return classes.detach().numpy()[0], conf.detach().numpy()[0], names
+
+    def predict_batch(self, image):
+        imgs = []
+        for im in image:
+            im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+            im = self.transform(im)
+            imgs.append(im)
+        image = torch.stack(imgs)
+        image = image.to(self.DEVICE)
+
+        # Forward pass throught the image.
+        outputs = self.model(image)
+        probs = torch.nn.functional.softmax(outputs, dim=1)
+        conf, classes = torch.max(probs, 1)
+        # outputs = outputs.detach().numpy()
+        names = [self.class_names[y] for y in classes]
+        return classes.detach().numpy(), conf.detach().numpy(), names
+
+
+class BoardDetector:
+    SHAPE_OUT = (500, 500)
+    PAD_BORDER = 30
+    MAX_REPROJ_ERROR = 50
+    MAX_MSE_ERROR = 5_000
+    PATH_TEMPLATE = PATH_TEMPLATE
+    COLOR_BACKGROUND = (185, 197, 203)
+
+    def __init__(self):
+        self.detORB = BoardDetector_ORB(
+            SHAPE_OUT=self.SHAPE_OUT, PATCH_SIZE=31)
+        self.detYOLO = BoardDetector_YOLO(
+            SHAPE_OUT=self.SHAPE_OUT, PAD_BORDER=50)
+
+        imgTpt = cv2.imread(self.PATH_TEMPLATE)
+        w, h, brd = *self.SHAPE_OUT, self.PAD_BORDER
+        mat = cv2.getAffineTransform(
+            np.float32([[0, 0], [imgTpt.shape[0], 0], [0, imgTpt.shape[1]]]),
+            np.float32([[brd, brd], [w-brd, brd], [brd, h-brd]]))
+        self.imgTpt = cv2.warpAffine(imgTpt, mat, [w, h],
+                                     borderValue=self.COLOR_BACKGROUND)
+
+        scale = self.SHAPE_OUT[0] - 2 * self.PAD_BORDER
+        trans = [self.PAD_BORDER] * 2
+        self.spotScore = SpotObject(
+            [0.0656, 0.0276, 0.8656, 0.278], (6, 20), (0.0412, 0.052)) * scale + trans
+        self.spotLines = SpotObject(
+            [0.078, 0.3956, 0.3544, 0.3588], (5, 5), (0.0792, 0.0792)) * scale + trans
+        self.spotGrid = SpotObject(
+            [0.5624, 0.3956, 0.3512, 0.3588], (5, 5), (0.0792, 0.0792)) * scale + trans
+        self.spotFloor = SpotObject(
+            [0.078, 0.9032, 0.5756, 0.0792], (1, 7), (0.0792, 0.0792)) * scale + trans
+
+        self.tileClassifier = TileClassifier()
+
+    def estimate_K(self, img):
+        h, w, c = img.shape
+        f = 0.6 * w
+        return np.array([[f, 0, w/2], [0, f, h/2], [0, 0, 1]], np.float32)
+
+    def detect_tiles(self, img, plot=False):
+        imgs, ups = self.detect(img)
+        imt = []
+        for im, up in zip(imgs, ups):
+            imt += [(self.spotGrid + up).crop(im, (i//5, i % 5)) for i in range(25)] + \
+                [(self.spotLines + up).crop(im, (i//5, i % 5)) for i in range(25) if i % 5 >= 4 - i//5] + \
+                [(self.spotFloor + up).crop(im, (0, i)) for i in range(7)]
+
+        # more efficient than single predictions
+        cls, conf, clsName = self.tileClassifier.predict_batch(imt)
+        numPlayers = len(imgs)
+        tileDict = {'background': -1, 'black': 3, 'blue': 0,
+                    'first': 5, 'red': 2, 'white': 4, 'yellow': 1}
+        cls = np.reshape([tileDict[c] for c in clsName], [numPlayers, -1])
+        player = []
+        # tptGray = cv2.cvtColor(
+        #     self.imgTpt, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        tptGray = cv2.cvtColor(
+            self.imgTpt, cv2.COLOR_BGR2HSV)[:, :, 2].astype(np.float32)
+        vals = []
+        for i in range(numPlayers):
+            # im = cv2.cvtColor(imgs[i], cv2.COLOR_BGR2GRAY).astype(np.float32)
+            im = cv2.cvtColor(imgs[i], cv2.COLOR_BGR2HSV)[
+                :, :, 2].astype(np.float32)
+            imgdiff = cv2.absdiff(tptGray, im)
+            val = self.spotScore.get_diff_grid(imgdiff) + \
+                (self.spotScore + ups[i]).get_diff_grid(imgdiff)
+            vals.append(val)
+            idx = val.argmax()
+            iscore, jscore = idx // self.spotScore.shape[1], idx % self.spotScore.shape[1]
+            if iscore > 0:
+                score = jscore + 1 + (iscore - 1) * self.spotScore.shape[1]
+            else:
+                score = 0
+
+            lines = cls[i, 25:-7].tolist()
+            lineNum, lineColor = [], []
+            for row in range(5):
+                lines, tiles = lines[row+1:], lines[:row+1]
+                lineColor.append(tiles[-1])
+                lineNum.append(tiles.count(
+                    tiles[-1]) if tiles[-1] != -1 else 0)
+
+            player.append(dict(
+                score=score,
+                grid=cls[i, :25].reshape(5, 5),
+                lineColor=lineColor,
+                lineNum=lineNum,
+                floor=cls[i, -7:]
+            ))
+
+        if plot:
+            for im, p in zip(imgs, player):
+                self.mark_board(im, p)
+
+        return player, imgs, vals
+
+    def mark_board(self, im, player):
+        NUM_ROWS = 5
+        classLabelDict = {-1: '', 3: 'K', 0: 'B',
+                          5: 'F', 2: 'R', 4: 'W', 1: 'Y'}
+        classColorDict = {-1: (255, 255, 255), 3: (200, 200, 200), 0: (255, 150, 150),
+                          5: (255, 255, 255), 2: (100, 100, 255), 4: (255, 255, 255),
+                          1: (100, 255, 255)}
+
+        def label_tile(spot, row, col, color):
+            rect = np.int32(spot.get_rect((row, col)))
+            cv2.rectangle(im, rect[:2], rect[-2:], (200, 200, 200), 1)
+            cv2.putText(im, classLabelDict[color],
+                        rect[:2] + [5+1, 20+1], cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (0, 0, 0), 2)
+            cv2.putText(im, classLabelDict[color],
+                        rect[:2] + [5-1, 20-1], cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        classColorDict[color], 2)
+
+        for row in range(NUM_ROWS):
+            for col in range(NUM_ROWS):
+                label_tile(self.spotGrid, row, col, player['grid'][row, col])
+
+                if row >= NUM_ROWS - 1 - col:
+                    color = player['lineColor'][row] if NUM_ROWS - \
+                        col-1 < player['lineNum'][row] else -1
+                    label_tile(self.spotLines, row, col, color)
+
+        for col in range(7):
+            label_tile(self.spotFloor, 0, col, player['floor'][col])
+
+        if player['score'] > 0:
+            i, j = player['score'] // 20 + 1, (player['score'] - 1) % 20
+        else:
+            i, j = 0, 0
+        rect = np.int32(self.spotScore.get_rect((i, j)))
+        cv2.rectangle(im, rect[:2], rect[-2:], (200, 200, 200), 1)
+        cv2.putText(im, f"{player['score']}",
+                    rect[:2] + [3+1, 10+1], cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (0,0,0), 2)
+        cv2.putText(im, f"{player['score']}",
+                    rect[:2] + [3-1, 10-1], cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (255, 255, 255), 2)
+
+    def detect(self, img, plot=False):
+        if plot:
+            self.imgDraw = img.copy()
+        brd, brdOrb = self.PAD_BORDER, self.detORB.PAD_BORDER
+        h, w = self.SHAPE_OUT
+        dst = np.float32(
+            [[brdOrb, h-brdOrb], [w-brdOrb, h-brdOrb], [w-brdOrb, brdOrb], [brdOrb, brdOrb]])
+        # board corners in iboard coord
+        src = np.float32(
+            [[brd, h-brd], [w-brd, h-brd], [w-brd, brd], [brd, brd]])
+        matrixBorder = cv2.getPerspectiveTransform(dst, src)
+
+        # board corners in norm board coord
+        objpts = np.array(
+            [[0, 1, 0], [1, 1, 0], [1, 0, 0], [0, 0, 0]], np.float32)
+        objCoords = np.float32(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]) / 2
+        objUp = np.array([[0.5, 0.5, 0], [0.5, 0.5, -0.033]], np.float32)
+        K = self.estimate_K(img)
+
+        imgs = []
+        upVector = []
+        brd = self.PAD_BORDER
+        for matrixYOLO in self.detYOLO.get_matrix(img, plot):
+            image = cv2.warpPerspective(
+                img, matrixYOLO, self.detYOLO.SHAPE_OUT, borderMode=cv2.BORDER_REPLICATE)
+            try:
+                matrixORB = self.detORB.get_matrix(image, plot)
+            except AssertionError as e:
+                if e == "Not enough matches" or e == "No features found":
+                    warn("ORB did not find matches")
+                    continue
+                # raise e
+
+            matRawToIBoard = matrixBorder @ matrixORB @ matrixYOLO
+            im = cv2.warpPerspective(
+                img, matRawToIBoard, self.SHAPE_OUT)
+
+            if mse(self.imgTpt, im) > self.MAX_MSE_ERROR:
+                print(f"MSE too high: {mse(self.imgTpt, im)}")
+                continue
+
+            # estimate upVector
+            # from iboard coordinates to raw
+            corners = cv2.perspectiveTransform(
+                src[:, np.newaxis, :], np.linalg.pinv(matRawToIBoard))
+
+            # TODO use method that works with non-square boards
+            retval, rvec, tvec = cv2.solvePnP(
+                objpts, np.float32(corners.copy()), K, None,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE)
+
+            cornersReproj = cv2.projectPoints(objpts, rvec, tvec, K, None)[0]
+            err = np.mean(np.sum((cornersReproj - corners)**2, 2)**0.5)
+            if err > self.MAX_REPROJ_ERROR:
+                print(f"Reprojection error too high: {err}")
+                continue
+
+            ptsUp, _ = cv2.projectPoints(objUp, rvec, tvec, K, None)
+            ptsUp = cv2.perspectiveTransform(
+                ptsUp, matRawToIBoard)[:, 0, :]
+
+            imgs.append(im)
+            upVector.append(ptsUp[1] - ptsUp[0])
+
+            if plot:
+                brdCoords, _ = cv2.projectPoints(
+                    objCoords, rvec, tvec, K, None)
+                cv2.polylines(self.imgDraw, [np.int32(brdCoords[[0, 1]])],
+                              True, color=(0, 0, 255), thickness=15)
+                cv2.polylines(self.imgDraw, [np.int32(brdCoords[[0, 2]])],
+                              True, color=(0, 255, 0), thickness=15)
+                cv2.polylines(self.imgDraw, [np.int32(brdCoords[[0, 3]])],
+                              True, color=(255, 0, 0), thickness=15)
+                for c in corners:
+                    self.imgDraw = cv2.circle(self.imgDraw, tuple(
+                        c[0].astype(int)), 30, (0, 0, 255), -1)
+
+        return imgs, upVector
+
+
 def feature_matching(features0, features1):
     matches = []  # good matches as per Lowe's ratio test
     if (features0.des is not None and len(features0.des) > 2):
@@ -114,9 +678,10 @@ def corners_from_dm(frame, border):
 
 
 def mse(img1, img2):
+    """Similarity betweek 2 board images"""
     h, w, c = img1.shape
-    diff = cv2.subtract(cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY),
-                        cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY))
+    diff = cv2.subtract(cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY).astype(np.float32),
+                        cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype(np.float32))
     err = np.sum(diff**2)
     # calculate nmse
     # nmse = err/(float(h*w)) / 255**2
@@ -124,20 +689,18 @@ def mse(img1, img2):
     return mse
 
 
-"""
-    get_boards: 
-
-    Input:
-        - img: BGR image of board
-        - plot: whether to plot intermediate results
-    Output:
-        - imgBoard: list of N BGR images of each board
-        - maskMerge: mask of all boards
-        - matrices: list of N matrices that transform each board to C1
-"""
-
-
 def get_boards(img, plot=False):
+    """
+        get_boards: 
+
+        Input:
+            - img: BGR image of board
+            - plot: whether to plot intermediate results
+        Output:
+            - imgBoard: list of N BGR images of each board
+            - maskMerge: mask of all boards
+            - matrices: list of N matrices that transform each board to C1
+    """
     imgClean = img.copy()
     masks, boxes = segment(img, plot)
     maskMerge = np.sum(np.uint8(masks), axis=0).astype(np.uint8)
@@ -148,7 +711,7 @@ def get_boards(img, plot=False):
     dst = np.float32([[BRD, BRD], [FSZ-BRD, BRD],
                      [FSZ-BRD, FSZ-BRD], [BRD, FSZ-BRD]])
 
-    BRD2, FSZ2 = 0, 640
+    BRD2, FSZ2 = 0, 640  # output board resolution
     sz = FSZ2 / 640
     # C1 to C0
     matrix3 = cv2.getPerspectiveTransform(dst, np.float32([
@@ -156,8 +719,8 @@ def get_boards(img, plot=False):
     BORDER_COLOR = (81, 56, 40)
 
     imgBoard, matrices = [], []
-    for mask, box in zip(masks, boxes):
-        src = corners_from_mask(np.uint8(mask))
+    for i, (mask, box) in enumerate(zip(masks, boxes)):
+        src = polygon_from_mask(np.uint8(mask))
         corners = src * [wf/w1, hf/h1]  # in raw coordinates
         # raw to C1'
         matrix = cv2.getPerspectiveTransform(
@@ -180,8 +743,23 @@ def get_boards(img, plot=False):
         # upVector = np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1]-wid//30, 1]) - \
         #     np.linalg.solve(matrix3 @ matrix2 @ matrix, [c0[0], c0[1], 1])
 
-        upVector = matrix3 @ matrix2 @ matrix @ [c0[0], c0[1]-wid/30, 1] - \
-            matrix3 @ matrix2 @ matrix @ [c0[0], c0[1], 1]
+        # upVector = matrix3 @ matrix2 @ matrix @ [c0[0], c0[1]-wid/30, 1] - \
+        #     matrix3 @ matrix2 @ matrix @ [c0[0], c0[1], 1]
+        objpts = np.array(
+            [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], np.float32)
+        objUp = np.array([[0.5, 0.5, 0], [0.5, 0.5, -0.03]], np.float32)
+        imgpts = np.float32(corners)
+        h, w, c = img.shape
+        f = 0.6 * w
+        K = np.array([[f, 0, w/2], [0, f, h/2], [0, 0, 1]], np.float32)
+        retval, rvec, tvec = cv2.solvePnP(
+            objpts, imgpts, K, None,
+            np.array([-0.8, 0, 0], np.float32),
+            np.array([0, 0, 5], np.float32), True)
+        ptsUp, _ = cv2.projectPoints(objUp, rvec, tvec, K, None)
+        ptsUp = cv2.perspectiveTransform(
+            ptsUp, matrix3 @ matrix2 @ matrix)[:, 0, :]
+        upVector = ptsUp[1] - ptsUp[0]
 
         valMatch = mse(frame, _template0)
         if plot:
@@ -192,11 +770,26 @@ def get_boards(img, plot=False):
                     3*sz), color=2, thickness=-1)
             cv2.putText(frame, f"{int(valMatch)}", (int(10*sz), int(40*sz)),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2*sz, (50, 50, 255), int(3*sz))
+            cv2.arrowedLine(frame, ptsUp[0].astype(int),
+                            ptsUp[1].astype(int), (255, 0, 0), 7)
             cv2.line(img, [c0[0], c0[1]-wid//30], [c0[0], c0[1]],
                      color=(255, 0, 0), thickness=11)
 
+            imgptsRepr, _ = cv2.projectPoints(objpts, rvec, tvec, K, None)
+            objUpLong = np.array([[0.5, 0.5, 0], [0.5, 0.5, -0.5]], np.float32)
+            ptsUpLong, _ = cv2.projectPoints(objUpLong, rvec, tvec, K, None)
+
+            cv2.polylines(img, [np.int32(imgptsRepr)], True, (128, 0, 128), 20)
+            cv2.circle(img, tuple(imgpts[0].astype(int)), 30, (0, 0, 255), -1)
+            cv2.circle(img, tuple(imgpts[1].astype(int)), 50, (0, 0, 255), -1)
+            cv2.arrowedLine(img, tuple(*ptsUpLong[0].astype(int)),
+                            tuple(*ptsUpLong[1].astype(int)), (255, 0, 0), 30)
+            cv2.putText(img, f"{i}",
+                        tuple(imgpts[0].astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 8, (0, 0, 255), 20)
+
         imgBoard.append(frame)
-        matrices.append(upVector[:2])
+        matrices.append(upVector)
+        # matrices.append(corners)
 
     return imgBoard, maskMerge, matrices
 
@@ -230,7 +823,7 @@ def signed_area(u, v):
 
 
 # TODO test with polygons besides N=4
-def corners_from_mask(mask, numCorners=4):
+def polygon_from_mask(mask, numCorners=4):
     # [s0, v] * N
     # s0: vertex
     # v: direction vector of edge, oriented toward +z

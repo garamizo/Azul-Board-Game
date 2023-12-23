@@ -249,18 +249,17 @@ public abstract class Game<M>
     // public abstract bool IsTerminal();
     public abstract bool IsValid(M action);
     public abstract bool Play(M action);
-    public abstract bool IsEqual(Game<M> game);
-    public abstract List<M> GetPossibleActions();
+    public abstract bool Equals(Game<M> game);
+    public abstract List<M> GetPossibleActions(bool sort = false);
     public abstract M GetRandomMove();
     public abstract M GetGreedyMove();
-    public abstract M GetGreedyMove2();
 
     // [0f, 1f], 0f: sure loss, 1f: sure win, use probability to be in between
     public abstract float[] GetHeuristics();  // assumes game is NOT over
 
     // 0f: loss, 1f: win, 1/numPlayers: tie
     public abstract float[] GetRewards();  // assumes game is over
-    // public abstract int[] GetScores();
+    public abstract float[] GetScores();  // scores, not win/lose
 
     public M GetEGreedyMove(float epsilon)
     {
@@ -385,6 +384,8 @@ class Benchmark<G, M>
                         {
                             var action = policies[pindex[game.activePlayer]](game);
                             Debug.Assert(game.IsValid(action));
+                            if (game.IsValid(action) == false)
+                                throw new Exception("Invalid move");
                             game.Play(action);
                         }
 

@@ -62,7 +62,7 @@ public class Game : GameUtils.Game<Move>
     //     return true;
     // }
 
-    public override bool IsEqual(GameUtils.Game<Move> other)
+    public override bool Equals(GameUtils.Game<Move> other)
     {
         var a = other as Game;
         if (a.numPlayers != numPlayers ||
@@ -167,7 +167,7 @@ public class Game : GameUtils.Game<Move>
         step++;
         return false;
     }
-    public override List<Move> GetPossibleActions()
+    public override List<Move> GetPossibleActions(bool sort = false)
     {
         List<Move> actions = new();
         for (int i = 0; i < ROWS; i++)
@@ -200,7 +200,6 @@ public class Game : GameUtils.Game<Move>
         return actions[bestIdx];
     }
 
-    public override Move GetGreedyMove2() => GetGreedyMove();
 
     public override float[] GetRewards()
     {
@@ -216,6 +215,7 @@ public class Game : GameUtils.Game<Move>
             return reward;
         }
     }
+    public override float[] GetScores() => GetRewards();
 
     public override float[] GetHeuristics()
     {   // loss = 0, tie = 1/numPlayers, win = 1

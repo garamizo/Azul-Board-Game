@@ -9,6 +9,186 @@ using System.Diagnostics;
 using GameMath = GameUtils.GameMath;
 using DeepCopy;
 
+
+
+
+// // // g.Play(g.GetGreedyMove());
+// Console.WriteLine(g);
+// // // var m = new Move(new int[] { 3, 2, 2, -1, -1 }, g);
+
+// var ai = new MCTS<Game, Move>(g, eGreedy: 1.0f);
+
+// ai.GrowWhile(6f);
+// // Child 3) Player=2, Factory=7, Color=WHITE:4, Row=FLOOR:5, NumTiles=2, IsFirst=False, Rolls: 38295, winRatio: 0.51298255
+// // g.Play(g.GetGreedyMove());
+
+// // // Console.WriteLine(ai.ToString(1));
+// // Console.WriteLine(ai);
+
+// // (ai, var found) = ai.SearchNode(g);
+
+
+// // Console.WriteLine($"{g}\nFound: {found}\n{ai}\n{ai.state}");
+
+// // // Active player 2, numRolls 12488, numChilds 216
+// // // Child 136) Player 2) ColIdx=[0, 2, 2, -1, -1], Rolls: 132, winRatio: 0.51893938
+
+// for (int i = 0; i < 1; i++)
+// {
+//     var g = Game.LoadCustomGame();
+//     var ai = new MCTS_Stochastic<Game, Move>(g, eGreedy: 0.1f);
+//     ai.GrowWhile(10f);
+//     Console.WriteLine($"Iter {i}: {ai.ToString(5)}");
+// }
+// var g = Game.LoadCustomGame();
+// Console.WriteLine($"Old method {g.GetPossibleActions().Count}");
+// foreach (var a in g.GetPossibleActions())
+//     Console.WriteLine(a);
+
+// Console.WriteLine($"New method {g.GetPossibleActions2().Count}");
+// foreach (var a in g.GetPossibleActions2())
+//     Console.WriteLine(a);
+
+// return;
+
+
+// var g = Game.LoadCustomGame();
+
+// foreach (var m in g.GetPossibleActions())
+//     Console.WriteLine(m);
+
+// // var ms = g.GetPossibleActions();
+// Console.WriteLine(g);
+// // g.GetGreedyMove();
+// // Console.WriteLine(g.GetGreedyMove());
+
+// return;
+
+
+// // Compare two implementations ====================
+// var g = Game.LoadCustomGame();
+// Stopwatch watch = new();
+
+// watch.Restart();
+// var ms = g.GetPossibleActions();
+// watch.Stop();
+// foreach (var m in ms)
+//     Console.WriteLine(m);
+// Console.WriteLine($"Time elapsed: {watch.Elapsed.TotalMilliseconds * 1000} ms");
+
+// watch.Restart();
+// ms = g.GetColIdxMoves2();
+// watch.Stop();
+// foreach (var m in ms)
+//     Console.WriteLine(m);
+// Console.WriteLine($"Time elapsed: {watch.Elapsed.TotalMilliseconds * 1e3} ms");
+
+// return;
+
+// Calc num rolls per second -------------------
+
+int NumRolls = 0;
+const int NUM_ITERS = 10;
+
+for (int i = 0; i < NUM_ITERS; i++)
+{
+    var game = new Game(4);
+    // var game = Game.LoadCustomGame();
+
+    var mcts_ = new MCTS_Stochastic<Game, Move>(game, eGreedy: 0f);
+    // var mcts_ = new MCTS<Game, Move>(game, eGreedy: 0.1f);
+    mcts_.GrowWhile(1f);
+    NumRolls += mcts_.numRolls;
+
+    // Stopwatch watch = new();
+    // watch.Start();
+    // var m = game.GetGreedyMove();
+    // watch.Stop();
+    // duration += (float)watch.Elapsed.TotalSeconds;
+    Console.Write(".");
+}
+
+Console.WriteLine($"\n {NumRolls / (float)NUM_ITERS}");
+// Console.WriteLine(1e6 * duration / (float)NUM_ITERS);
+// Console.WriteLine(mcts_);
+
+return;  // before 3549
+// random: before-2020, after-2018
+// // greedy move (regular): 391 us
+
+// fix RandomMove: 4387
+// no copy: 50.8
+// clone: 26.8 rolls per 3s
+// Array.Copy: 22.4 rolls per 3s
+// forfor: 14.4 rools per 3s
+// DeepCopier: 15.2
+
+// // play against the machine ==================
+// var game = new Game(3);
+// // var game = Game.LoadCustomGame();
+// Move a = new();
+// float timeout_ = 3.0f;
+
+// var mcts_ = new MCTS<Game, Move>(game, eGreedy: 0.0f);
+// Func<Game, Move> policy_mcts = (Game g) =>
+// {
+//     (mcts_, var found) = mcts_.SearchNode(g);
+//     mcts_.GrowWhile(timeout_, 300_000);
+//     int idx = mcts_.GetBestActionIdx();
+//     Console.WriteLine($"\tWinRatio: {mcts_.WinRatio(idx)}, numRolls: {mcts_.NumRolls(idx)}");
+//     if (mcts_.WinRatio(idx) < 0.0001f || mcts_.NumRolls(idx) < 100)  // to avoid giving-up-move
+//         return g.GetGreedyMove();
+//     return mcts_.actions[idx];
+// };
+
+// var mcts2_ = new MCTS_Stochastic<Game, Move>(game, eGreedy: 0.0f);
+// Func<Game, Move> policy_mcts_stochastic = (Game g) =>
+// {
+//     (mcts2_, var found) = mcts2_.SearchNode(g);
+//     mcts2_.GrowWhile(timeout_, 300_000);
+//     int idx = mcts2_.GetBestActionIdx();
+//     Console.WriteLine($"\tWinRatio: {mcts2_.WinRatio(idx)}, numRolls: {mcts2_.NumRolls(idx)}, {mcts2_.actions[idx]}");
+//     if (mcts2_.WinRatio(idx) < 0.0001f || mcts2_.NumRolls(idx) < 100)  // to avoid giving-up-move
+//         return g.GetGreedyMove();
+//     // else if (mcts2_.WinRatio(idx) > 0.999f && mcts2_.NumRolls(idx) > 5_000)  // maximize score
+//     // {
+//     //     var idx2 = mcts2_.GetParanoidActionIdx();
+//     //     if (idx2 > -1) idx = idx2;
+//     //     Console.WriteLine("\tParanoid action: " + (idx2 > -1 ? mcts2_.actions[idx] : "Not found"));
+//     // }
+//     return mcts2_.actions[idx];
+// };
+
+// Func<Game, Move>[] policies =
+// {
+//     // (Game g) => g.GetGreedyMove(),
+//     policy_mcts,
+//     (Game g) => g.GetUserMove(),
+//     // (Game g) => g.GetRandomMove(),
+//     // (Game g) => g.GetGreedyMove(),
+//     // mypolicy,
+//     policy_mcts_stochastic,
+// };
+
+// while (game.IsGameOver() == false)
+// {
+//     a = policies[game.activePlayer](DeepCopier.Copy(game));
+//     Console.WriteLine(a);
+//     Debug.Assert(game.IsValid(a), "Invalid move");
+//     if (game.IsValid(a) == false)
+//     {
+//         Console.WriteLine("Invalid move");
+//         Console.WriteLine(Game.ToScript(game));
+//         continue;
+//     }
+
+//     if (game.Play(a))  // if round is over
+//         Console.WriteLine(game);
+// }
+// Console.WriteLine(game);
+// return;
+
+// ========================================
 // // 2600 ms to 650 ms for GetGreedyMove
 // // 842-935 to 3855-3699 rolls from 2s growth
 // // var watch = Stopwatch.StartNew();
@@ -139,31 +319,7 @@ using DeepCopy;
 // Console.WriteLine(game);
 // return;
 
-// play against the machine ==================
-// var game = new Game(3);
-// var mcts_ = new MCTS_Stochastic<Game, Move>(game, eGreedy: 0.1f);
-// Func<Game, Move> mypolicy = (Game g) =>
-// {
-//     (mcts_, var found) = mcts_.SearchNode(g);
-//     mcts_.GrowWhile(2.0f);
-//     return mcts_.GetBestAction();
-// };
-// while (game.IsGameOver() == false)
-// {
-//     // Move a = game.GetGreedyMove();
-//     // var a = (game.activePlayer == 0) ? game.GetUserMove() :
-//     //     ParanoidID<Game, Move>.GetBestMove(game, 8, 2.0f);
-//     var a = (game.activePlayer == 0) ? game.GetUserMove() :
-//         mypolicy(game);
-//     Debug.Assert(game.IsValid(a));
 
-//     Console.WriteLine(a);
-//     if (game.Play(a))  // if round is over
-//         Console.WriteLine(".");
-//     // break;
-// }
-// Console.WriteLine(game);
-// return;
 
 // var agent = new AgentGenerator(
 //     durationMax: 0.01f,
@@ -180,35 +336,10 @@ using DeepCopy;
 
 // return;
 
-// var game = new Game().Reset(4);
-// Console.WriteLine(game);
-
-// var agent = new AgentGenerator(
-//     durationMax: 0.01f,
-//     rewardMap: GameUtils.RewardMap.WinLosePlus,
-//     eGreedy: 0.1f,  // greedy 90% of the time
-//     stochastic: false,
-//     paranoid: false);
-// String description = agent.description;
-
-// var policy = (Func<Game, Move>)((Game game) =>
-// {
-//     var a = Maxn<Game, Move>.GetBestMove(game, depth: 1, timeout: 0.1f);
-//     return a;
-// });
-
-// var game = Game.GenerateLastMoveGame();
-// Console.WriteLine(Maxn<Game, Move>.count);
-// var a = policy(game);
-// Console.WriteLine(Maxn<Game, Move>.count);
-// a = policy(game);
-// a = policy(game);
-// Console.WriteLine(Maxn<Game, Move>.count);
-
 float timeout = 3f;
 var bench = new GameUtils.Benchmark<Game, Move>(
-    minNumPlayers: 4,
-    maxNumPlayers: 4,
+    minNumPlayers: 3,
+    maxNumPlayers: 3,
     numCycles: 10,
     filename: @"benchmark3.csv",
     comment: "e10, e10, Paranoid"
@@ -220,53 +351,51 @@ var bench = new GameUtils.Benchmark<Game, Move>(
 // bench.policies.Add((Game g) => g.GetRandomMove());
 // bench.policies.Add((Game g) => MaxnID<Game, Move>.GetBestMove(g, timeout: timeout));
 // bench.policies.Add((Game g) => ParanoidID<Game, Move>.GetBestMove(g, timeout: timeout));
+// bench.policies.Add((Game g) => g.GetGreedyMove());
 
-var mcts_stochastic = new MCTS_Stochastic<Game, Move>(new Game(4), eGreedy: 0.01f);
+var mcts_stochastic = new MCTS_Stochastic<Game, Move>(new Game(3), eGreedy: 0.0f);
 bench.policies.Add((Game g) =>
 {
     (mcts_stochastic, var found) = mcts_stochastic.SearchNode(g);
-    mcts_stochastic.GrowWhile(timeout);
+    mcts_stochastic.GrowWhile(timeout, 300_000);
     int idx = mcts_stochastic.GetBestActionIdx();
-    if (mcts_stochastic.WinRatio(idx) == 0.0)
+    if (mcts_stochastic.WinRatio(idx) < 0.00001 || mcts_stochastic.NumRolls(idx) < 100)
         return g.GetGreedyMove();
     return mcts_stochastic.actions[idx];
-}); // 3.3     40.0    53.3         for 30 games
-// 0.0     40.0    56.4     for 55 games
+});
 
-var mcts = new MCTS_Stochastic<Game, Move>(new Game(4), eGreedy: 0.02f);
+var mcts = new MCTS_Stochastic<Game, Move>(new Game(3), eGreedy: 0.01f);
 bench.policies.Add((Game g) =>
 {
     (mcts, var found) = mcts.SearchNode(g);
-    mcts.GrowWhile(timeout);
-    return mcts.GetBestAction();
+    mcts.GrowWhile(timeout, 300_000);
+    int idx = mcts.GetBestActionIdx();
+    if (mcts.WinRatio(idx) < 0.00001 || mcts.NumRolls(idx) < 100)
+        return g.GetGreedyMove();
+    return mcts.actions[idx];
 });
 
-var mcts3 = new MCTS_Stochastic<Game, Move>(new Game(4), eGreedy: 0.05f);
+var mcts3 = new MCTS<Game, Move>(new Game(4), eGreedy: 0.05f);
 bench.policies.Add((Game g) =>
 {
     (mcts3, var found) = mcts3.SearchNode(g);
-    mcts3.GrowWhile(timeout);
-    return mcts3.GetBestAction();
+    mcts3.GrowWhile(timeout, 300_000);
+    var idx = mcts3.GetBestActionIdx();
+    if (mcts3.WinRatio(idx) < 0.00001 || mcts3.NumRolls(idx) < 100)
+        return g.GetGreedyMove();
+    return mcts3.actions[idx];
 });
 
-var mcts4 = new MCTS_Stochastic<Game, Move>(new Game(4), eGreedy: 0.1f);
-bench.policies.Add((Game g) =>
-{
-    (mcts4, var found) = mcts4.SearchNode(g);
-    mcts4.GrowWhile(timeout);
-    return mcts4.GetBestAction();
-});
-
-// 2p: 31.0    31.0    88.0,        3p: 24.3    22.3    50.7        2.43 min runtime
-// 30.5    35.0    84.5         27.3    26.7    44.3
-// 4x4 grid,    2p: 32.0    33.0    85.0,   3p: 14.3    15.3    70.3
-
-// bench.policies.Add((Game g) => Paranoid<Game, Move>.GetBestMove(g, depth: 16, timeout: 0.1f));
-// 2p: 38.0    40.0    72.0,        3p: 23.7    29.7    43.0        0.89 min runtime
-// 4x4 grid,    2p:38.5    35.5    76.0         3p: 30.3    24.7    45.0
-
-// bench.policies.Add((Game g) => MaxnID<Game, Move>.GetBestMove(g, timeout: 0.1f));
-// 2p: 31.5    29.0    89.5,        3p: 24.0    34.0    36.3,       2.39 min runtime
+// var mcts4 = new MCTS<Game, Move>(new Game(4), eGreedy: 0.2f);
+// bench.policies.Add((Game g) =>
+// {
+//     (mcts4, var found) = mcts4.SearchNode(g);
+//     mcts4.GrowWhile(timeout, 300_000);
+//     var idx = mcts4.GetBestActionIdx();
+//     if (mcts4.WinRatio(idx) < 0.0001 || mcts4.NumRolls(idx) < 100)
+//         return g.GetGreedyMove();
+//     return mcts4.GetBestAction();
+// });
 
 bench.Run();
 

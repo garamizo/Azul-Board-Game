@@ -10,16 +10,15 @@ from logic import print_state
 
 # from logic import Table
 # from ai import MCTS_node
-from logic_wrapper import Table
-from ai_wrapper import MCTS_node
+from logic_wrapper import Move, Game, get_observation
+from ai_wrapper import MCTS
 
 DELAY_ANIMATION = 250
 DELAY_AI_MOVE = 4000
 AI_MOVE = pygame.USEREVENT + 1
-COLOR_NAME = {1: "BLUE", 2: "YELLOW", 3: "RED",
-              4: "BLACK", 5: "WHITE", 6: "FIRST"}
-ROW_NAME = {-1: "FLOOR", 0: "FIRST", 1: "SECOND",
-            2: "THIRD", 3: "FOURTH", 4: "FIFTH"}
+NOT_SET = -30
+NUM_COLORS = 5
+NUM_ROWS = 5
 
 
 class Azul:
@@ -55,11 +54,11 @@ class Azul:
         self.FONT_DISPLAY_MESSAGE = pygame.font.SysFont(None, 200, bold=False)
         self.FONT_HELP_MESSAGE = pygame.font.SysFont(None, 40, bold=False)
 
-        self.logic = Table(len(self.isHumanPlayer))
-        # self.logic.core = self.logic.core.LoadCustomGame()
+        self.logic = Game(len(self.isHumanPlayer))
+        # self.logic = Game.LoadCustomGame()
 
         # self.logic.reset()
-        obs = self.logic.get_observation()
+        obs = get_observation(self.logic)
         self.isHumanPlayer = self.isHumanPlayer[:len(obs['player'])]
 
         self.screen = pygame.display.set_mode(SIZE_SCREEN)
@@ -67,12 +66,16 @@ class Azul:
         self.setup(obs)
         # print(obs)
 
-        self.aiEngine = MCTS_node(self.logic)
+        self.aiEngine = MCTS[Game, Move](self.logic, 0.0)
         # self.aiEngine = [None] * self.numPlayers
 
         # selected commands
-        self.playLineIdx, self.playIsFirst, self.playMark, \
-            self.playFactoryIdx = None, None, None, None
+        # self.playLineIdx, self.playIsFirst, self.playMark, \
+        #     self.playFactoryIdx = None, None, None, None
+        self.move = Move()
+        self.move.row = self.move.factoryIdx = self.move.color = NOT_SET
+        self.move.colIdx = [NOT_SET] * 5
+        print(Game.ToScript(self.logic))
 
     @property
     def activePlayer(self):
@@ -83,7 +86,7 @@ class Azul:
         return self.logic.numPlayers
 
     def is_game_over(self):
-        return self.logic.is_game_over()
+        return self.logic.IsGameOver()
 
     def setup(self, obs):
 
@@ -124,7 +127,6 @@ class Azul:
             self._handle_input()
             self._process_game_logic()
             self._draw()
-            self.process_AI(0.1)
 
     def _init_pygame(self):
         pygame.init()
@@ -140,127 +142,77 @@ class Azul:
                 quit()
 
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                # obs = self.logic.get_observation()
-                # print(obs)
-                print(self.logic.get_printable())
+                print(Game.ToScript(self.logic))
+
             elif event.type == pygame.MOUSEBUTTONDOWN:
 
                 self.timeLastEvent = pygame.time.get_ticks()
 
                 # user clicked active board
                 if self.activeBoard.rect.collidepoint(event.pos):
-                    playLineIdx = self.activeBoard.mouse_callback(event)
-                    self.playLineIdx = playLineIdx if self.playLineIdx != playLineIdx else None
+                    locStr, locIdx = self.activeBoard.mouse_callback(event)
+                    if locStr == 'row' and self.logic.isRegularPhase:
+                        self.move.row = locIdx if self.move.row != locIdx else NOT_SET
+                        # print(f"Clicked on row {locIdx}")
+
+                    elif locStr == 'row' and self.logic.isRegularPhase == False:
+                        self.move.colIdx[locIdx] = NUM_ROWS \
+                            if self.move.colIdx[locIdx] != NUM_ROWS else NOT_SET
+                        # print(f"Clicked on FLOOR for row {locIdx}")
+
+                    elif locStr == 'colIdx' and self.logic.isRegularPhase == False:
+                        self.move.colIdx[locIdx[0]] = locIdx[1] \
+                            if self.move.colIdx[locIdx[0]] != locIdx[1] else NOT_SET
+                        # print(f"Clicked on grid {locIdx} {self.move}")
+
                     mouseHandled = True
                     continue
 
+                color, factoryIdx = None, None
                 # user clicked center tiles
                 if self.center.rect.collidepoint(event.pos):
+                    color = self.center.mouse_callback(event)
+                    factoryIdx = self.logic.numFactories
                     mouseHandled = True
-                    playMark, _, playIsFirst = \
-                        self.center.mouse_callback(event)
-                    if self.playMark != playMark or self.playIsFirst != playIsFirst:
-                        self.playMark = playMark
-                        self.playIsFirst = playIsFirst
-                    else:
-                        self.playMark = self.playIsFirst = None
-
-                    self.playFactoryIdx = -1
-                    continue
 
                 # user clicked a factory
                 for i, factory in enumerate(self.factory):
                     if factory.rect.collidepoint(event.pos):
+                        color = factory.mouse_callback(event)
+                        factoryIdx = i
                         mouseHandled = True
-                        playMark, _ = factory.mouse_callback(event)
-                        playFactoryIdx = i
-                        if self.playMark != playMark or self.playFactoryIdx != playFactoryIdx:
-                            self.playMark, self.playFactoryIdx = playMark, playFactoryIdx
-                        else:
-                            self.playMark, self.playFactoryIdx = None, None
-
                         break
 
-            elif event.type == AI_MOVE:
-                mouseHandled = True
-                self.helpMessage = f"Please wait for AI's turn"
-                self._draw()
-
-                # t0 = pygame.time.get_ticks()
-                # MIN_ROLLS, rolls = 4000, 0
-                # with tqdm(total=MIN_ROLLS) as pbar:
-                # while pygame.time.get_ticks() - t0 < 4_000:
-                self.process_AI(4)
-                # numRolls = self.aiEngine[self.activePlayer].numRolls
-                # pbar.update(numRolls - rolls)
-                # rolls = numRolls
-
-                # actionIdx = self.aiEngine[self.activePlayer].get_best_action()
-
-                # if current player is first of the non-human players
-                # if self.isHumanPlayer.index(False) == self.activePlayer:
-                #     self.playFactoryIdx, self.playMark, self.playLineIdx = \
-                #         self.logic.get_egreedy_move(0.0)
-                #     numRolls, numWins = 1, -1
-                # else:
-                self.playFactoryIdx, self.playMark, self.playLineIdx, \
-                    numRolls, numWins = self.aiEngine.get_action()
-
-                print((f"AI {self.logic.activePlayer + 1} action:"
-                       f"factoryIdx: {self.playFactoryIdx}, "
-                       f"color: {COLOR_NAME[self.playMark]}, row: {ROW_NAME[self.playLineIdx]}, "
-                       f"numSims: {numRolls}, "
-                       f"avgReward: {numWins/numRolls: .3}"))
-
-                if self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx) == False:
-                    print(
-                        f"AI {self.logic.activePlayer + 1} tried an invalid move")
-                    self.playLineIdx = None
-                    self.logic.core.Print()
-
-                    self.aiEngine[self.activePlayer].core.state.Print()
-                    assert False, "AI tried invalid move"
-
-                self.SOUND_AI_TURN.play()
-                self.helpMessage = f""
+                # print(f"Clicked {color} from factory {factoryIdx}")
+                if color is None or (self.move.color == color and self.move.factoryIdx == factoryIdx):
+                    self.move.color = NOT_SET
+                    self.move.factoryIdx = NOT_SET
+                else:
+                    self.move.color = color
+                    self.move.factoryIdx = factoryIdx
 
         # play sound if valid click
         if mouseHandled:
             self.SOUND_SELECT.play()
             self.update_draw_ui()
+            # print(self.move)
 
-        # test if move is valid
-        if (mouseHandled and self.playLineIdx is not None and self.playMark is not None):
+    def move_is_set(self):
 
-            self.update_draw_ui()
-            if self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
-                # pygame.time.delay(100)
-                self.delay(100 / 1000)
-            else:
-                self.SOUND_WRONG.play()
-                print("Invalid move")
+        if self.logic.isRegularPhase:
+            return self.move.color != NOT_SET and self.move.factoryIdx != NOT_SET and self.move.row != NOT_SET
+        else:
+            m = Move(self.move, self.logic)
+            for col in m.colIdx:
+                if col == NOT_SET:
+                    return False
+            return True
 
     def process_AI(self, timeout):
-        # numAIPlayers = len(
-        #     [1 for isHuman in self.isHumanPlayer if isHuman == False])
-        # if numAIPlayers == 0:
-        #     return
-
-        # for i, isHuman in enumerate(self.isHumanPlayer):
-        #     if isHuman:
-        #         continue
-
-        #     # load for the first time
-        #     if self.aiEngine[i] is None:
-        #         self.aiEngine[i] = MCTS_node(self.logic)
-        #         self.aiEngine[i].core.rootPlayer = i
-
-        #     self.aiEngine[i] = self.aiEngine[i].search_node(
-        #         self.logic, maxDepth=self.logic.numPlayers)
-
-        self.aiEngine = self.aiEngine.search_node(self.logic, maxDepth=4)
-        self.aiEngine.grow_while(
-            timeout=timeout, maxRolls=50_000)
+        self.aiEngine = self.aiEngine.SearchNode(self.logic, 4).Item1
+        if self.aiEngine.numRolls < 1:
+            print("Resetting tree...")
+        self.aiEngine.GrowWhile(timeout, 300_000)
 
     def delay(self, secs):
         t0 = pygame.time.get_ticks()
@@ -282,27 +234,73 @@ class Azul:
     def _process_game_logic(self):
 
         # move not selected yet
-        if (self.playLineIdx is None or self.playMark is None):
-            # if active player is AI, trigger AI to pick move
-            if not self.activeBoard.isHuman:
-                pygame.event.post(pygame.event.Event(AI_MOVE))
-            return
-        # return if move is invalid
-        if not self.logic.is_valid(self.playMark, self.playFactoryIdx, self.playLineIdx):
+        # if self.move.is_set() == False:
+        # if active player is AI, trigger AI to pick move
+        self.process_AI(0.1)
+        if not self.activeBoard.isHuman:
+            self.helpMessage = f"Please wait for AI's turn"
+            self._draw()
+
+            # check if is the first AI
+            # if self.logic.activePlayer == self.isHumanPlayer.index(False):
+            #     self.move = self.logic.GetGreedyMove()
+            #     self.delay(1.5)
+            #     print("Greedy move: ", self.move)
+            # else:
+            t0 = pygame.time.get_ticks()
+            self.delay(2)
+            idx = self.aiEngine.GetBestActionIdx()
+            while self.aiEngine.NumRolls(idx) < 1_000:
+                self.process_AI(1)
+                # self.aiEngine.GrowWhile(1, 100_000)
+                idx = self.aiEngine.GetBestActionIdx()
+                print(f"{self.aiEngine.NumRolls(idx)}(total: {self.aiEngine.numRolls})  ",
+                      end="", flush=True)
+                if pygame.time.get_ticks() - t0 > 10_000:
+                    break
+            self.move = self.aiEngine.GetBestAction() if self.aiEngine.WinRatio(idx) != 0 \
+                else self.logic.GetGreedyMove()
+
+            print(f"AI move: {self.aiEngine.ToString(1)}")
+            assert self.logic.IsValid(self.move), "AI tried invalid move"
+
+            self.SOUND_AI_TURN.play()
+            self.helpMessage = f""
+            self.SOUND_SELECT.play()
+            self.update_draw_ui()
+            self.delay(100 / 1000)
+
+        if self.move_is_set() == False:
             return
 
-        self.obsOld = deepcopy(self.logic.get_observation())
+        # correct all fields of move
+        self.move = Move(self.move, self.logic)
+
+        if self.logic.IsValid(self.move):
+            self.delay(100 / 1000)
+        else:
+            self.SOUND_WRONG.play()
+            print(f"{self.move} is invalid")
+            self.move.row = self.move.factoryIdx = self.move.color = NOT_SET
+            self.move.colIdx = [NOT_SET] * 5
+            return
+
+        # print(f"\t\t{self.move}")
+
+        self.obsOld = deepcopy(get_observation(self.logic))
         if self.activeBoard.isHuman:
-            print((f"Human {self.obsOld['activePlayer'] + 1} action:"
-                   f"factoryIdx: {self.playFactoryIdx}, "
-                   f"color: {COLOR_NAME[self.playMark]}, row: {ROW_NAME[self.playLineIdx]}"))
+            print(
+                f"Human {self.obsOld['activePlayer'] + 1} action: {self.move}")
 
         # print("Before\n", self.logic.get_observation())
-        self.logic.step_move(
-            self.playMark, self.playFactoryIdx, self.playLineIdx)
+        self.logic.Play(self.move)
+        # reset controls
+        self.move = Move()
+        self.move.row = self.move.factoryIdx = self.move.color = NOT_SET
+        self.move.colIdx = [NOT_SET] * 5
 
-        obs = self.logic.get_observation()
-        if self.logic.is_game_over():  # obs['isGameOver']:  # end of game
+        obs = get_observation(self.logic)
+        if self.logic.IsGameOver():  # obs['isGameOver']:  # end of game
             # draw, add score, animate score, animate winner, sing song, wait for quit
             self.animate_game_over()
             # print("End\n", obs)
@@ -310,18 +308,14 @@ class Azul:
             # draw, add score, animate score, animate new round, sing song
             self.animate_new_round()
             # print("After\n", self.logic.get_observation())
-            print(self.logic.get_printable())
+            print(self.logic)
         else:  # next player
             self.animate_transition()
 
         self.setup(obs)
 
-        # reset controls
-        self.playLineIdx, self.playIsFirst, self.playMark, self.playFactoryIdx = \
-            None, None, None, None
-
     def animate_game_over(self):
-        obs = self.logic.get_observation()
+        obs = get_observation(self.logic)
 
         pygame.time.delay(DELAY_ANIMATION * 5)
         self.displayMessage = f"Game Over"
@@ -352,7 +346,7 @@ class Azul:
 
     def animate_new_round(self):
         self.setup(self.obsOld)
-        obs = deepcopy(self.logic.get_observation())
+        obs = deepcopy(get_observation(self.logic))
 
         # pygame.time.delay(DELAY_ANIMATION * 5)
         self.delay(DELAY_ANIMATION * 5 / 1000)
@@ -380,7 +374,7 @@ class Azul:
 
     def animate_transition(self):
 
-        obsNew = self.logic.get_observation()
+        obsNew = get_observation(self.logic)
         obsNew['activePlayer'] = self.obsOld['activePlayer']
 
         for i in range(3):
@@ -396,32 +390,44 @@ class Azul:
 
     def update_draw_ui(self):
         color_select = RED
-        # highlight selected player line
-        if self.playLineIdx is not None:
-            if self.playLineIdx == -1:
-                pygame.draw.rect(self.screen, color_select,
-                                 self.activeBoard.rect_floor, width=3)
-            else:
-                pygame.draw.rect(self.screen, color_select,
-                                 self.activeBoard.rect_line[self.playLineIdx], width=3)
-
-        # highlight selected factory tiles
-        if self.playFactoryIdx is not None:
-            factory = self.factory[self.playFactoryIdx] \
-                if self.playFactoryIdx >= 0 else self.center
-
-            for content, tile in zip(factory.content, factory.tiles):
-                if content == self.playMark:
+        if self.logic.isRegularPhase:
+            # highlight selected player line
+            if self.move.row != NOT_SET:
+                if self.move.row == NUM_ROWS:  # draw floor
                     pygame.draw.rect(self.screen, color_select,
-                                     tile.rect, width=3)
-            if self.playIsFirst:
-                try:
+                                     self.activeBoard.rect_floor, width=3)
+                else:
                     pygame.draw.rect(self.screen, color_select,
-                                     factory.tiles[0].rect, width=3)
-                except IndexError:
-                    print(self.logic.get_printable())
-                    print("\n\tfactory cleared\n")
-                    self.playFactoryIdx = None
+                                     self.activeBoard.rect_line[self.move.row], width=3)
+
+            # highlight selected factory tiles
+            if self.move.factoryIdx != NOT_SET:
+                factory = self.center if self.move.factoryIdx == self.logic.numFactories \
+                    else self.factory[self.move.factoryIdx]
+
+                for content, tile in zip(factory.content, factory.tiles):
+                    if content == self.move.color:
+                        pygame.draw.rect(self.screen, color_select,
+                                         tile.rect, width=3)
+                if NUM_COLORS in factory.content:  # 1st move tile
+                    try:
+                        pygame.draw.rect(self.screen, color_select,
+                                         factory.tiles[-1].rect, width=3)
+                    except IndexError:
+                        print(self.logic)
+                        print("\n\tfactory cleared\n")
+                        self.factoryIdxOn = False
+        else:
+            for row, col in enumerate(self.move.colIdx):
+                # for i in range(25):
+                if col >= 0:
+                    # row, col = i // NUM_ROWS, i % NUM_ROWS
+                    if col >= NUM_ROWS:
+                        pygame.draw.rect(self.screen, color_select,
+                                         self.activeBoard.rect_line[row], width=3)
+                    else:
+                        pygame.draw.rect(self.screen, color_select,
+                                         self.activeBoard.rect_grid[row*NUM_ROWS + col], width=3)
 
         imgMessage = self.FONT_DISPLAY_MESSAGE.render(
             self.displayMessage, True, YELLOW, BLACK)
