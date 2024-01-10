@@ -219,11 +219,13 @@ class BoardDetector_ORB:
             nfeatures=self.N_FEATURES,
             edgeThreshold=self.PATCH_SIZE,
             patchSize=self.PATCH_SIZE,
+            scaleFactor=1.2,
             scoreType=cv2.ORB_HARRIS_SCORE)
         orbL = cv2.ORB_create(
             nfeatures=2*self.N_FEATURES,
             edgeThreshold=self.PATCH_SIZE,
             patchSize=self.PATCH_SIZE,
+            scaleFactor=1.2,
             scoreType=cv2.ORB_HARRIS_SCORE)
 
         imgTpt = cv2.imread(self.PATH_TEMPLATE)
@@ -259,7 +261,20 @@ class BoardDetector_ORB:
                                            self.imgTpt, self.features_tpl['kps'], matches, None)
         assert len(pts0) > self.MIN_MATCHES, "Not enough matches"
 
-        return cv2.findHomography(pts0, pts1, cv2.RANSAC, 5.0)[0]
+        # mat = cv2.findHomography(pts0, pts1, cv2.LMEDS)[0]
+        # mat = cv2.findHomography(pts0, pts1, cv2.RANSAC)[0]
+        mat = cv2.findHomography(pts0, pts1, cv2.RHO)[0]
+
+        return mat
+
+        # remove borders
+        b = self.PAD_BORDER
+        w = self.SHAPE_OUT[0]
+        mat2 = cv2.getAffineTransform(
+            np.float32([[b, b], [w-b, b], [w-b, w-b]]),
+            np.float32([[0, 0], [w, 0], [w, w]]))
+
+        return mat @ np.r_[mat2, [[0, 0, 1]]]
 
     def detect(self, img, plot=False):
         return cv2.warpPerspective(
@@ -288,7 +303,14 @@ class BoardDetector_ORB:
             orb = self.orb
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         kps, des = orb.detectAndCompute(gray_img, None)
+        # kps0, des0 = orb.detectAndCompute(img[:,:,0], None)
+        # kps1, des1 = orb.detectAndCompute(img[:,:,1], None)
+        # kps2, des2 = orb.detectAndCompute(img[:,:,2], None)
+        # kps = kps0 + kps1 + kps2
+        # des = np.concatenate([des0, des1, des2], axis=0)
+
         return dict(kps=kps, des=des)
+
 
 
 class SpotObject:
@@ -421,18 +443,18 @@ class TileClassifier:
 
 
 class BoardDetector:
-    SHAPE_OUT = (500, 500)
-    PAD_BORDER = 30
-    MAX_REPROJ_ERROR = 50
-    MAX_MSE_ERROR = 5_000
+    SHAPE_OUT = (1000, 1000)
+    MAX_REPROJ_ERROR = 5000
+    MAX_MSE_ERROR = 100_000
     PATH_TEMPLATE = PATH_TEMPLATE
     COLOR_BACKGROUND = (185, 197, 203)
 
     def __init__(self):
+        self.PAD_BORDER = self.SHAPE_OUT[0] // 10
         self.detORB = BoardDetector_ORB(
-            SHAPE_OUT=self.SHAPE_OUT, PATCH_SIZE=31)
+            SHAPE_OUT=self.SHAPE_OUT, PATCH_SIZE=self.SHAPE_OUT[0]//20)
         self.detYOLO = BoardDetector_YOLO(
-            SHAPE_OUT=self.SHAPE_OUT, PAD_BORDER=50)
+            SHAPE_OUT=self.SHAPE_OUT, PAD_BORDER=self.PAD_BORDER)
 
         imgTpt = cv2.imread(self.PATH_TEMPLATE)
         w, h, brd = *self.SHAPE_OUT, self.PAD_BORDER
@@ -461,7 +483,7 @@ class BoardDetector:
         return np.array([[f, 0, w/2], [0, f, h/2], [0, 0, 1]], np.float32)
 
     def detect_tiles(self, img, plot=False):
-        imgs, ups = self.detect(img)
+        imgs, ups = self.detect(img, plot)
         imt = []
         for im, up in zip(imgs, ups):
             imt += [(self.spotGrid + up).crop(im, (i//5, i % 5)) for i in range(25)] + \
@@ -582,17 +604,22 @@ class BoardDetector:
 
         imgs = []
         upVector = []
+        self.imgDebug = []
         brd = self.PAD_BORDER
         for matrixYOLO in self.detYOLO.get_matrix(img, plot):
             image = cv2.warpPerspective(
                 img, matrixYOLO, self.detYOLO.SHAPE_OUT, borderMode=cv2.BORDER_REPLICATE)
             try:
                 matrixORB = self.detORB.get_matrix(image, plot)
+                if plot:
+                    self.imgDebug.append(self.detORB.imgDraw.copy())
             except AssertionError as e:
                 if e == "Not enough matches" or e == "No features found":
                     warn("ORB did not find matches")
                     continue
-                # raise e
+                raise e
+            except Exception as e:
+                raise e
 
             matRawToIBoard = matrixBorder @ matrixORB @ matrixYOLO
             im = cv2.warpPerspective(
@@ -639,6 +666,20 @@ class BoardDetector:
                         c[0].astype(int)), 30, (0, 0, 255), -1)
 
         return imgs, upVector
+    
+    
+    def get_mse(self, im):
+
+        # remove borders
+        b = self.PAD_BORDER
+        w = self.SHAPE_OUT[0]
+        mat = cv2.getAffineTransform(
+            np.float32([[b, b], [w-b, b], [w-b, w-b]]),
+            np.float32([[0, 0], [w, 0], [w, w]]))
+        im = cv2.warpAffine(im, mat, [w, w], borderValue=self.COLOR_BACKGROUND)
+        imgTpt = cv2.warpAffine(self.imgTpt, mat, [w, w], borderValue=self.COLOR_BACKGROUND)
+
+        return mse(imgTpt, im)
 
 
 def feature_matching(features0, features1):
