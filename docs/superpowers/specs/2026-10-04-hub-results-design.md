@@ -47,8 +47,11 @@ free-placement wall, azul-web spec R5), so the variant carries only the player c
 **Assumptions** (challenge any of them):
 
 - The published stack always runs behind Cloudflare Access, so every human seat has an
-  email. Dev mode's `X-Dev-User` emails are reported if a dev hub is configured, and look
-  like any other email to the hub.
+  email.
+- In dev mode, identities come from `X-Dev-User` or default to `dev@localhost`, and the
+  hub's email check rejects `dev@localhost`. Section 4's email rule therefore sends such
+  addresses as null, and the hub records the player as unidentified instead of refusing the
+  whole report.
 - Games started before this ships are never reported. They have no `started_at` and no
   captured bot key.
 - One brain (`MctsBrain`) plays every bot seat, and its parameters come from the
@@ -140,9 +143,15 @@ frozen in `hub_reports.body`.
      any `moves` row with `actor = 'bot'` whose seat currently has an email, or had one
      when the move was made. A `ToBot` seat keeps its email (`GameService.ToBot`), and
      `TakeBack` restores the same email, so "the seat has an email now" covers both cases.
-     A seat that was a bot from the start never has an email. The query is
-     `SELECT DISTINCT seat FROM moves WHERE game_id = ? AND actor = 'bot'`, intersected with
-     the seats that have an email. It runs inside `decide`, on the same connection.
+     A seat that was a bot from the start never has an email.
+     - The bot-played seats are the union of two sets:
+       - `SELECT DISTINCT seat FROM moves WHERE game_id = ? AND actor = 'bot'`, run inside
+         `Mutate` on the same connection;
+       - the finishing move itself (`commit.Move`, when its actor is `bot`), which is not
+         inserted yet when the report is built.
+     - The result is intersected with the seats that have an email.
+     - Without the union, a hand-over just before the last wall turn would be missed. A
+       test covers that exact case.
 - **`started_at` / `finished_at`**: the stored strings, re-rendered as UTC
   `yyyy-MM-ddTHH:mm:ss.fffZ`.
 - **`replay_url`**: `"{PublicOrigin}/g/{id}"` (`AZUL_PUBLIC_ORIGIN`). It is null when
@@ -151,9 +160,18 @@ frozen in `hub_reports.body`.
   - **`seat`**: `"P1"`…`"P4"` (index + 1). Azul seats have no colours.
   - **A seat with an email**, whether its kind is `human` or a `bot` handed over by `ToBot`:
     - `kind: "human"`;
-    - `email`;
-    - `name`: the email's local part, truncated to 40 code points. If the local part is
-      empty, the name is `"Player"`.
+    - `email`: the seat's email, lowercased, if it matches the hub's email pattern;
+      otherwise null. The hub validates with Zod v4's `z.email()`, and its regex is copied
+      verbatim into `HubReport.cs` with a comment naming its source:
+      `^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$`.
+      A null email makes the hub mark the match unrated as "unidentified player", instead
+      of answering 422 for the whole report.
+    - `name`: the email's local part, normalised to the hub's rule:
+      - NUL removed;
+      - trimmed of JavaScript's whitespace set, which includes U+FEFF;
+      - truncated to 40 code points.
+
+      If the result is empty, the name is `"Player"`.
 
     A handed-over seat is reported under its owner. Rule 2 has already made such a match
     unrated.
@@ -184,13 +202,17 @@ Hub §5.1 says a bot's key must change whenever its effective behaviour can chan
     brain's wrapper logic changes, such as the greedy fallback. A comment on the constant
     says so.
   - `engine`: the `ModuleVersionId` (MVID) of the `AzulLibrary` assembly.
-    - With deterministic builds, which are the SDK default, the MVID is a hash of the
-      compiled assembly. Any change to the engine's rules or AI changes it, and nothing
-      else does.
-    - The Docker build adds `-p:ContinuousIntegrationBuild=true`, which normalises source
-      paths. The same source then gives the same MVID on any machine, and a rebuild alone
-      does not change the key. The implementation plan verifies this by building the image
-      twice and comparing keys.
+    - **This is a conservative fingerprint, not a semantic one.** The MVID changes with any
+      change to the compiled assembly. That includes the rules and the AI, but also
+      unrelated code in the same assembly (such as `TicTacToe.cs`) and a different compiler
+      version. A changed MVID with unchanged play means a new bot account, and the old one
+      is retired by hand (below). That churn is accepted.
+    - **What is ruled out is churn from rebuilding the same source.** Deterministic builds
+      are the SDK default. The Docker build adds `-p:ContinuousIntegrationBuild=true`, which
+      normalises source paths. The `Dockerfile` pins the SDK and runtime images to an exact
+      patch version (`sdk:10.0.<n>`, `aspnet:10.0.<n>`) instead of the floating `10.0` tag.
+    - The implementation plan verifies this by building the image twice with `--no-cache`
+      and comparing the logged keys.
 - **What is deliberately not covered.**
   - `AZUL_BOT_WORKERS` and machine speed. They change how many rollouts fit in the think
     time, but they are a property of the host, not of the bot. This is accepted, and noted
@@ -213,6 +235,10 @@ Hub §5.1 says a bot's key must change whenever its effective behaviour can chan
 
 - If building throws, the error is logged and the move commits without a report.
   Reconcile picks the game up later, as below.
+- Until a report exists, the game's rows are the only inputs to a rebuild. While a finished
+  `hub_tracked` game has no `hub_reports` row, `GameService.Delete` therefore refuses with
+  409 `hub-report-pending`. This only happens after a build bug, and the creator can delete
+  the game once the report is queued.
 - The build happens before `BeginTransaction`, so a throw cannot leave a transaction half
   done.
 
@@ -286,6 +312,19 @@ it logs a warning once.
 - The retry delay is `min(60 s × 2^(attempts-1), 1 h)`, plus up to 10% jitter.
 - A row pending for over an hour logs one error, then at most one an hour (`alerted_at`).
 
+**Containment.** No exception escapes `ExecuteAsync`. By default, a `BackgroundService`
+exception stops the host, which would take gameplay down with delivery. The structure
+mirrors `BotScheduler`'s worker loop.
+
+- **Each row** is handled in its own `try`. An exception while sending, or while recording
+  the outcome, is logged with the game id. The row's lease simply expires, and the row is
+  retried.
+- **Each cycle** (reconcile, claim, the loop over rows) is wrapped in an outer `try`. A
+  failure to open SQLite, or a failed query, is logged. The loop then waits for the next
+  cycle.
+- **A test** makes the database throw during a cycle, and asserts that the sender keeps
+  running and that moves still commit.
+
 **Shutdown.** `ExecuteAsync` honours the stopping token. An interrupted send leaves its
 lease to expire, and the row is retried.
 
@@ -298,7 +337,12 @@ JSON document and exits.
 - **`/app/AzulServer hub status`** prints counts by status, the 20 newest failed rows, and
   the age of the oldest pending row.
 - **`/app/AzulServer hub retry <game_id>|--all-failed [--rebuild]`** puts rows back to
-  `pending`. With `--rebuild`, it deletes them instead, and reconcile rebuilds the bodies.
+  `pending`.
+  - With `--rebuild`, the body is rebuilt first, under the game's lock. The stored row is
+    replaced with the fresh body (status `pending`, `attempts = 0`) only if the build
+    succeeds.
+  - A row whose game no longer exists is never rebuilt or deleted. It is reported as
+    `{"game_id", "skipped": "game deleted"}`, so a report is never lost by a rebuild.
 - **`/app/AzulServer hub ping`** posts `{}` to the configured hub. It exits 0 on 422, which
   means the hub was reached, the key accepted and the content type passed. Any other answer
   exits non-zero, with the status. The aspnet image has no curl, so `serve-check` uses this.
@@ -331,7 +375,7 @@ JSON document and exits.
 `docker compose ... exec app /app/AzulServer hub ping`. It is skipped with a notice when
 `AZUL_HUB_KEY` is empty.
 
-**`Dockerfile`:** `-p:ContinuousIntegrationBuild=true` on the publish step (section 5).
+**`Dockerfile`:** `-p:ContinuousIntegrationBuild=true` on the publish step, and SDK and runtime images pinned to an exact patch version (section 5).
 
 **`docs/deploy.md`** gets a "Playhub" section covering:
 - registering the game and writing the key;
@@ -352,7 +396,7 @@ JSON document and exits.
 
 | Failure | Effect |
 | --- | --- |
-| Building the report throws | The move commits anyway and an error is logged. Reconcile retries every cycle and logs each failure. |
+| Building the report throws | The move commits anyway and an error is logged. Reconcile retries every cycle and logs each failure. `Delete` is refused (409) until the report exists. |
 | The process dies after commit | The report is already in `hub_reports`, written in the same transaction. |
 | Hub down, network missing, or 5xx | Pending, with backoff. A stuck alert after an hour. |
 | 401 | Pending, with an error log on each attempt. |
@@ -371,7 +415,20 @@ JSON document and exits.
   - a handed-over seat is reported as human;
   - names: the local part, truncated to 40, falling back to "Player";
   - timestamps end in `Z` with milliseconds;
-  - the body passes the hub's limits;
+  - the email rule: `dev@localhost` and other addresses the hub's pattern rejects are sent
+    as null;
+  - names: NUL is removed, a U+FEFF-only local part becomes "Player";
+  - **contract check against the real hub parser:** the tests write a set of golden bodies
+    to `server/AzulServer.Tests/Hub/golden/*.json`. Between them they cover:
+    - stalemate;
+    - handover;
+    - ties;
+    - a null email;
+    - an odd name.
+
+    The plan's verification step runs
+    `npx tsx scripts/hub.ts results validate <file>` from `~/playhub` (playhub CLI spec 4.7)
+    on each golden body, and each must be accepted;
   - `replay_url` is null when `PublicOrigin` is unset.
 - **`BotIdentityTests`:**
   - the key is stable for the same options;
@@ -380,8 +437,13 @@ JSON document and exits.
 - **`HubOutboxTests`** (through the API with `GreedyBrain`, as existing tests do):
   - a game finished by a human move queues one row;
   - a game finished by a bot move queues one row;
-  - the row commits atomically with the move (an injected fault after `tx.Commit` leaves
-    the row present);
+  - atomicity, tested with a new `IFaultInjector.BeforeOutboxInsert(gameId)` hook, called
+    inside the transaction after `InsertMove` and before `HubOutbox.Queue`. An injected
+    fault there must leave **neither** the finishing move nor the report committed. The
+    game is still at its previous version, and the move can be retried. A test passing on
+    two separate transactions would fail this check;
+  - a hand-over to the bot just before the finishing wall turn makes the match unrated;
+  - `Delete` of a finished game without a report answers 409, and with a report succeeds;
   - a build exception leaves the move committed and the row missing, and reconcile then
     queues it;
   - a pre-existing game (`hub_tracked = 0`) queues nothing;
