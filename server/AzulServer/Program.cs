@@ -2,6 +2,7 @@ using AzulServer;
 using AzulServer.Api;
 using AzulServer.Auth;
 using AzulServer.Data;
+using AzulServer.Games;
 using Microsoft.Extensions.FileProviders;
 
 if (args.Contains("--healthcheck"))
@@ -16,6 +17,10 @@ builder.Services.AddSingleton<IJwksFetcher, HttpJwksFetcher>();
 builder.Services.AddSingleton<JwksCache>();
 builder.Services.AddSingleton<AccessVerifier>();
 builder.Services.AddSingleton<Db>();
+builder.Services.AddSingleton<EventHub>();
+builder.Services.AddSingleton<ServerMoveQueue>();
+builder.Services.AddSingleton<IFaultInjector, NoFaults>();
+builder.Services.AddSingleton<GameService>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<AzulOptions>();  // fail fast on bad configuration
