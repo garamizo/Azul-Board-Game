@@ -10,7 +10,7 @@ DOTNET := docker run --rm -i --user $(UID):$(GID) \
 	-e DOTNET_NOLOGO=1 -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
 	-v $(CURDIR):/src -v $(NUGET_DIR):/nuget -w /src $(SDK_IMAGE) dotnet
 
-.PHONY: dotnet build test desktop-smoke dev-server web-test
+.PHONY: dotnet build test desktop-smoke dev-server web-test e2e-publish e2e-server-start e2e-server-restart e2e-server-stop e2e
 
 $(NUGET_DIR):
 	mkdir -p $@
@@ -43,3 +43,32 @@ dev-server: | $(NUGET_DIR)
 
 web-test:
 	cd web && npm run check && npm test
+
+# End-to-end: the published server in dev mode, in the ASP.NET runtime image,
+# on 127.0.0.1:5081 with a fresh database. Fixed port and container name per
+# checkout directory; two worktrees running e2e at once collide on the port.
+E2E_NAME := azul-e2e-$(notdir $(CURDIR))
+E2E_WAIT = for i in $$(seq 1 60); do curl -sf http://127.0.0.1:5081/api/health >/dev/null && exit 0; sleep 1; done; docker logs $(E2E_NAME); exit 1
+
+e2e-publish: | $(NUGET_DIR)
+	$(DOTNET) publish server/AzulServer/AzulServer.csproj -c Release -o /src/.data/e2e-server
+
+e2e-server-start: e2e-publish
+	rm -rf .data/e2e-db && mkdir -p .data/e2e-db
+	docker rm -f $(E2E_NAME) >/dev/null 2>&1 || true
+	docker run -d --name $(E2E_NAME) --user $(UID):$(GID) -p 127.0.0.1:5081:8080 \
+		-e ASPNETCORE_HTTP_PORTS=8080 -e AZUL_DATA_DIR=/data -e AZUL_WEB_ROOT=/web \
+		-e AZUL_BOT_THINK_SECONDS=0.2 -e AZUL_MIN_MOVE_DELAY_SECONDS=0.2 \
+		-v $(CURDIR)/.data/e2e-server:/app:ro -v $(CURDIR)/.data/e2e-db:/data -v $(CURDIR)/web/dist:/web:ro \
+		mcr.microsoft.com/dotnet/aspnet:10.0 dotnet /app/AzulServer.dll >/dev/null
+	@$(E2E_WAIT)
+
+e2e-server-restart:
+	docker restart $(E2E_NAME) >/dev/null
+	@$(E2E_WAIT)
+
+e2e-server-stop:
+	docker rm -f $(E2E_NAME) >/dev/null 2>&1 || true
+
+e2e:
+	cd web && npm run build && npx playwright test
