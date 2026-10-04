@@ -8,7 +8,6 @@
   import OpponentCard from './OpponentCard.svelte';
   import Sheet from './Sheet.svelte';
   import { seatName } from '../lib/names';
-  import { COLOR_NAMES, tileHref } from '../lib/geometry';
   import { oneAtATime } from '../lib/submit';
   import { sounds } from '../lib/sound.svelte';
   import {
@@ -87,11 +86,6 @@
     <CenterView index={centre} counts={board.center} hasFirst={board.centerHasFirst}
       selectedColor={takeSel?.source?.factory === centre ? takeSel.source.color : null}
       canPick={(c) => !!legal && canPick(legal, centre, c)} onPick={(c) => pick(centre, c)} />
-    <div class="supply" data-testid="supply">
-      <span class="pile"><span>Discard</span>{' '}
-        {#each board.discard as n, c}<span class="count"><img src={tileHref(c)} alt={COLOR_NAMES[c]} />{n}</span>{' '}{/each}
-      </span>
-    </div>
   </section>
 
   {#if mySeat !== null}
@@ -155,10 +149,6 @@
   .table { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
   .factories { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; margin-bottom: 8px; }
   .actions { display: flex; gap: 8px; margin-top: 8px; }
-  .supply { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); font-size: 0.9em; }
-  .pile { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .count { display: inline-flex; align-items: center; gap: 2px; }
-  .count img { width: 16px; height: 16px; }
   .others-desktop { display: none; }
   .others-phone { display: grid; gap: 6px; }
   .result .winner { font-weight: 700; }

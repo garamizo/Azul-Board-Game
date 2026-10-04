@@ -48,14 +48,13 @@ describe('Table', () => {
     release();
   });
 
-  it('shows discard counts but not the bag', () => {
+  it('shows neither the discard nor the bag', () => {
     const v = myTurn();
     v.board!.bag = [12, 10, 9, 14, 11];
     v.board!.discard = [0, 1, 0, 0, 2];
-    const { container, getByTestId } = render(Table, { view: v, send: vi.fn() });
-    expect(getByTestId('supply').textContent!.replace(/\s+/g, ' ')).toContain('Discard 0 1 0 0 2');
-    expect(container.textContent).not.toMatch(/bag/i);
-    expect(container.textContent).not.toContain('12');
+    const { container, queryByTestId } = render(Table, { view: v, send: vi.fn() });
+    expect(queryByTestId('supply')).toBeNull();
+    expect(container.textContent).not.toMatch(/discard|bag/i);
   });
 
   it('a forced turn shows the auto-play step, not Your turn or Confirm', () => {
