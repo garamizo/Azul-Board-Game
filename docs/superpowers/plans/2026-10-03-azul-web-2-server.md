@@ -28,6 +28,8 @@ Everything in Plan 1's Global Constraints applies. In addition:
 2. Dev identity can also come from the cookie `azul_dev_user`, because `EventSource` cannot send headers (needed by Plan 3's e2e tests).
 3. `board.phase` is `"over"` once the game is finished (spec lists `take` / `wall` only).
 4. Test-only knobs: `AZUL_BOT_WORKERS=0`, `AZUL_SWEEP_SECONDS`, `AZUL_MIN_MOVE_DELAY_SECONDS`, `AZUL_SSE_HEARTBEAT_SECONDS`, `AZUL_SSE_MAX_MINUTES`.
+5. No in-memory view cache (spec §4.6 said "cached per version"): every read loads the game, seats and last move in one read transaction. A cache raced with deletes (Codex plan review), and at four players the extra reads cost nothing.
+6. Each SSE heartbeat also compares the stored version with the last one sent and sends the newer state, so a notification lost after a commit is repaired within one heartbeat.
 
 ## Review Focus
 
@@ -398,6 +400,14 @@ builder.Services.AddHttpClient();
 var app = builder.Build();
 var options = app.Services.GetRequiredService<AzulOptions>();  // fail fast on bad configuration
 
+// Unhandled errors (a corrupt stored game, say) answer 500 for that request
+// only, as JSON; TestServer would otherwise rethrow them into the test.
+app.UseExceptionHandler(errors => errors.Run(async ctx =>
+{
+    ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+    await ctx.Response.WriteAsJsonAsync(new { error = "internal" });
+}));
+
 // (Task 8 adds the identity and CSRF middleware here, before static files.)
 
 PhysicalFileProvider? files = options.WebRoot is { } webRoot && Directory.Exists(webRoot)
@@ -665,6 +675,15 @@ public sealed class AuthTests : IDisposable
     }
 
     [Fact]
+    public async Task RotationDuringAnOutageGives503()
+    {
+        Assert.Equal(HttpStatusCode.OK, (await Me(Jwt.Token(k1, "k1"))).StatusCode);
+        jwks.Fail = true;
+        clock.Advance(TimeSpan.FromSeconds(31));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await Me(Jwt.Token(k2, "k2"))).StatusCode);
+    }
+
+    [Fact]
     public async Task HangingJwksGives503()
     {
         jwks.Delay = TimeSpan.FromSeconds(30);
@@ -775,7 +794,9 @@ public sealed class JwksCache(IJwksFetcher fetcher, AzulOptions options, TimePro
         }
         bool ok = await RefreshAsync(ct);
         if (kid is not null && Has(kid)) return KeyLookupResult.Found;
-        return ok || keys.Count > 0 ? KeyLookupResult.Unknown : KeyLookupResult.Unavailable;
+        // A kid we cannot find after a failed refresh may be a rotated key:
+        // keys unavailable (503), not a bad token (401).
+        return ok ? KeyLookupResult.Unknown : KeyLookupResult.Unavailable;
     }
 
     bool Has(string kid) => keys.Any(k => k.KeyId == kid);
@@ -1385,9 +1406,9 @@ public static class GameStore
         return r.Read() ? ReadMove(r) : null;
     }
 
-    public static MoveRecord? LastMove(SqliteConnection c, string gameId)
+    public static MoveRecord? LastMove(SqliteConnection c, string gameId, SqliteTransaction? tx = null)
     {
-        using var cmd = Command(c, null, $"SELECT {MoveColumns} FROM moves WHERE game_id = $g ORDER BY version DESC LIMIT 1",
+        using var cmd = Command(c, tx, $"SELECT {MoveColumns} FROM moves WHERE game_id = $g ORDER BY version DESC LIMIT 1",
             ("$g", gameId));
         using var r = cmd.ExecuteReader();
         return r.Read() ? ReadMove(r) : null;
@@ -1765,10 +1786,11 @@ public static class Play
         columns,
     };
 
-    /// A legal move for the viewer: the first take, or every completed line to its first target.
+    /// A legal move for the viewer: the first take, or every completed line to
+    /// the floor (always legal; first targets could clash on a wall column).
     public static object AnyLegal(GameView v) => v.Legal!.Takes is { } takes
         ? Take(v, takes[0])
-        : Wall(v, v.Legal.Wall!.Select(r => r is null ? -1 : r.Targets[0]).ToArray());
+        : Wall(v, v.Legal.Wall!.Select(r => r is null ? -1 : 5).ToArray());
 
     public static async Task<GameView> WaitFor(HttpClient c, string id, Func<GameView, bool> done, int seconds = 30)
     {
@@ -1955,7 +1977,6 @@ public sealed class LobbyTests : IDisposable
             cmd.Parameters.AddWithValue("$id", bad);
             cmd.ExecuteNonQuery();
         }
-        app.Service<GameService>().Forget(bad);  // drop the cached copy
         Assert.Equal(HttpStatusCode.OK, await S(alice.GetAsync("/api/games")));
         Assert.Equal(HttpStatusCode.InternalServerError, await S(alice.GetAsync($"/api/games/{bad}")));
         Assert.Equal(HttpStatusCode.OK, await S(alice.GetAsync($"/api/games/{good}")));
@@ -2045,7 +2066,6 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
     sealed record Commit(GameRecord Next, MoveRecord? Move = null) : Decision;
 
     readonly ConcurrentDictionary<string, SemaphoreSlim> locks = new();
-    readonly ConcurrentDictionary<string, (GameRecord Game, MoveRecord? Last)> latest = new();
 
     SemaphoreSlim LockFor(string id) => locks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1));
 
@@ -2071,26 +2091,19 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
     }
 
     /// Null if the game does not exist. Throws for a game whose stored state
-    /// is invalid (the endpoint turns that into 500 for that game only).
+    /// is invalid (Program's exception handler answers 500 for that request).
     public GameView? GetView(string id, string viewer) =>
         Current(id) is { } cur ? Projection.Project(cur.Game, cur.Last, viewer) : null;
 
+    /// Game, seats and last move from one read transaction, so they belong to
+    /// the same committed version. No cache: it would race with deletes.
     (GameRecord Game, MoveRecord? Last)? Current(string id)
     {
-        if (latest.TryGetValue(id, out var hit)) return hit;
         using var c = db.Open();
-        var g = GameStore.Load(c, id);
-        if (g is null) return null;
-        var last = GameStore.LastMove(c, id);
-        Remember(g, last);
-        return (g, last);
+        using var tx = c.BeginTransaction(deferred: true);
+        var g = GameStore.Load(c, id, tx);
+        return g is null ? null : (g, GameStore.LastMove(c, id, tx));
     }
-
-    void Remember(GameRecord g, MoveRecord? last) =>
-        latest.AddOrUpdate(g.Id, (g, last), (_, old) => old.Game.Version >= g.Version ? old : (g, last));
-
-    /// Drops the cached copy (tests that edit the database directly).
-    public void Forget(string id) => latest.TryRemove(id, out _);
 
     // ---------- lobby ----------
 
@@ -2109,7 +2122,6 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
             GameStore.Insert(c, tx, g);
             tx.Commit();
         }
-        Remember(g, null);
         return new ApiResult(201, Projection.Project(g, null, viewer));
     }
 
@@ -2198,7 +2210,6 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
                 GameStore.Delete(c, tx, id);
                 tx.Commit();
             }
-            latest.TryRemove(id, out _);
             try
             {
                 queue.CancelSearch(id);
@@ -2246,7 +2257,6 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
                         if (move is not null) GameStore.InsertMove(c, tx, move);
                         tx.Commit();
                     }
-                    Remember(next, move ?? last);
                     AfterCommit(id, next.Version);
                     return ApiResult.Ok(view);
                 default:
@@ -2270,7 +2280,8 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
         }
         catch (Exception e)
         {
-            // Committed already; the sweep (Task 14) repairs a missed poke.
+            // Committed already: the sweep (Task 14) repairs a missed poke and
+            // the SSE heartbeat (Task 13) a missed notification.
             log.LogError(e, "post-commit step failed for game {Game}", id);
         }
     }
@@ -2363,7 +2374,7 @@ builder.Services.AddSingleton<IFaultInjector, NoFaults>();
 builder.Services.AddSingleton<GameService>();
 ```
 
-A corrupt game's `GET` throws `InvalidSnapshotException` inside the endpoint; ASP.NET Core answers 500 for that request only, which is what `CorruptGameDoesNotBreakTheListOrTheSweep` expects.
+A corrupt game's `GET` throws `InvalidSnapshotException` inside the endpoint; the exception handler from Task 7 answers 500 for that request only, which is what `CorruptGameDoesNotBreakTheListOrTheSweep` expects.
 
 - [ ] **Step 4: Run the tests**
 
@@ -2752,6 +2763,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 using System.Net;
 using System.Text;
 using AzulServer.Games;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AzulServer.Tests;
 
@@ -2853,6 +2865,35 @@ public sealed class SseTests : IDisposable
         Assert.Equal(2, views["dave"].You.Seat);
         Assert.Null(views["dave"].Legal);
         foreach (var s in streams.Values) s.Dispose();
+    }
+
+    sealed class LoseThirdNotification : IFaultInjector
+    {
+        int commits;
+        public void AfterCommit(string gameId)
+        {
+            // claim = 1, start = 2, alice's move = 3
+            if (Interlocked.Increment(ref commits) == 3)
+                throw new InvalidOperationException("notification lost");
+        }
+    }
+
+    [Fact]
+    public async Task HeartbeatRepairsALostNotification()
+    {
+        using var faulty = new TestApp(new AzulOptions { BotWorkers = 0, SseHeartbeatSeconds = 0.5 },
+            s => s.AddSingleton<IFaultInjector, LoseThirdNotification>());
+        var alice = faulty.Client("alice@x.com");
+        var bob = faulty.Client("bob@x.com");
+        var id = await Play.Started(2, alice, bob);
+        using var s = await Open(bob, id);
+        var first = Json.Deserialize<GameView>((await s.Next()).Data);
+        await alice.Post($"/api/games/{id}/moves", Play.AnyLegal(await Play.Get(alice, id)));
+        var (ev, data) = await s.Next(seconds: 5);
+        Assert.Equal("state", ev);
+        var next = Json.Deserialize<GameView>(data);
+        Assert.Equal(first.Version + 1, next.Version);
+        Assert.NotNull(next.Legal);  // bob's turn, an ordinary human turn
     }
 
     [Fact]
@@ -3004,8 +3045,24 @@ public static class EventStream
                     }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
-                        await ctx.Response.WriteAsync(": ping\n\n", ct);
-                        await ctx.Response.Body.FlushAsync(ct);
+                        // Heartbeat. Also catch up if a notification was lost
+                        // after a commit (GameService.AfterCommit failed).
+                        var current = games.GetView(id, viewer);
+                        if (current is null)
+                        {
+                            await WriteDeleted(ctx);
+                            return;
+                        }
+                        if (current.Version > sent)
+                        {
+                            sent = current.Version;
+                            await WriteState(ctx, current);
+                        }
+                        else
+                        {
+                            await ctx.Response.WriteAsync(": ping\n\n", ct);
+                            await ctx.Response.Body.FlushAsync(ct);
+                        }
                         continue;
                     }
                 }
@@ -3218,6 +3275,36 @@ public class BotTests
         }
     }
 
+    sealed class CountingBrain : IBotBrain
+    {
+        int current, max;
+        public int Max => max;
+        public Move ChooseMove(Game game, CancellationToken ct)
+        {
+            int n = Interlocked.Increment(ref current);
+            int seen;
+            do { seen = max; } while (n > seen && Interlocked.CompareExchange(ref max, n, seen) != seen);
+            Thread.Sleep(150);
+            Interlocked.Decrement(ref current);
+            return game.GetGreedyMove();
+        }
+    }
+
+    [Fact]
+    public async Task OneSearchPerGameEvenWithEagerSweeps()
+    {
+        var brain = new CountingBrain();
+        using var app = new TestApp(new AzulOptions { BotWorkers = 3, MinMoveDelaySeconds = 0, SweepSeconds = 0.02 },
+            s => s.AddSingleton<IBotBrain>(brain));
+        var alice = app.Client("alice@x.com");
+        var id = await Play.Started(4, alice);
+        await alice.Post($"/api/games/{id}/seats/0/to-bot");
+        var start = (await Play.Get(alice, id)).Version;
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, brain.Max);
+        Assert.True((await Play.Get(alice, id)).Version >= start + 3);
+    }
+
     [Fact]
     public async Task PendingBotTurnResumesAfterARestart()
     {
@@ -3275,6 +3362,14 @@ public sealed class ServerMoveQueue
     readonly ConcurrentDictionary<string, byte> pending = new();
     readonly Channel<string> channel = Channel.CreateUnbounded<string>();
     readonly ConcurrentDictionary<string, CancellationTokenSource> searches = new();
+    readonly ConcurrentDictionary<string, byte> active = new();
+
+    /// One worker per game at a time; a second take of a game in progress is
+    /// skipped (the running worker's commit pokes the game again, and the
+    /// sweep covers a move that ended in 409).
+    public bool TryStart(string gameId) => active.TryAdd(gameId, 0);
+
+    public void Finish(string gameId) => active.TryRemove(gameId, out _);
 
     public void Poke(string gameId)
     {
@@ -3389,6 +3484,7 @@ public sealed class BotScheduler(ServerMoveQueue queue, GameService games, IBotB
             string id;
             try { id = await queue.TakeAsync(ct); }
             catch (OperationCanceledException) { return; }
+            if (!queue.TryStart(id)) continue;
             try
             {
                 await PlayOne(id, ct);
@@ -3401,6 +3497,10 @@ public sealed class BotScheduler(ServerMoveQueue queue, GameService games, IBotB
             {
                 // Dropped; the sweep brings the game back.
                 log.LogError(e, "server move failed for game {Game}", id);
+            }
+            finally
+            {
+                queue.Finish(id);
             }
         }
     }

@@ -109,11 +109,12 @@ Everything in Plans 1–2's Global Constraints applies. In addition:
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { svelteTesting } from '@testing-library/svelte/vite';
 
 export default defineConfig({
-  plugins: [svelte()],
-  // Component tests need Svelte's browser build under Vitest.
-  resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
+  // svelteTesting: Svelte's browser build under Vitest and automatic cleanup
+  // of mounted components after each test.
+  plugins: [svelte(), svelteTesting()],
   server: {
     port: 5173,
     proxy: { '/api': { target: 'http://127.0.0.1:5080' } },
@@ -523,6 +524,19 @@ describe('subscribe', () => {
     expect(FakeSource.last).toBe(first);
   });
 
+  it('an expired session stops reconnecting and says so', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('EventSource', FakeSource);
+    vi.spyOn(api, 'me').mockRejectedValue(new ApiError(401, null));
+    const statuses: string[] = [];
+    subscribe('abc', { state: () => {}, deleted: () => {}, status: (s) => statuses.push(s) });
+    const first = FakeSource.last;
+    first.onerror!();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(statuses).toEqual(['reconnecting', 'signed-out']);
+    expect(FakeSource.last).toBe(first);
+  });
+
   it('the deleted event ends the subscription', () => {
     vi.stubGlobal('EventSource', FakeSource);
     const deleted = vi.fn();
@@ -599,7 +613,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export function message(e: unknown): string {
   if (e instanceof ApiError) {
     if (e.status === 401) return 'Signed out. Reload the page to sign in again.';
-    if (e.status === 503) return "The server can't verify sign-ins right now. Retrying…";
+    if (e.status === 503) return "The server can't verify sign-ins right now. Try again in a moment.";
     return e.body?.error ? `Not allowed: ${e.body.error}` : `Server error (${e.status})`;
   }
   return e instanceof Error ? e.message : String(e);
@@ -647,10 +661,12 @@ export function oneAtATime<T>(fn: () => Promise<T>): () => Promise<T | undefined
 import { api, ApiError } from './api';
 import type { GameView } from './types';
 
+export type LinkStatus = 'live' | 'reconnecting' | 'signed-out';
+
 export interface Handlers {
   state(view: GameView): void;
   deleted(): void;
-  status(status: 'live' | 'reconnecting'): void;
+  status(status: LinkStatus): void;
 }
 
 const DELAYS = [1000, 2000, 5000, 10000];
@@ -686,7 +702,13 @@ export function subscribe(id: string, on: Handlers): () => void {
       try {
         await api.me();
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) return;  // reloading, or signed out
+        if (err instanceof ApiError && err.status === 401) {
+          // api.me already reloaded the page once; if we are still here,
+          // reloading again will not help.
+          stopped = true;
+          on.status('signed-out');
+          return;
+        }
       }
       try {
         await api.game(id);
@@ -1135,6 +1157,16 @@ describe('Table', () => {
     release();
   });
 
+  it('shows bag and discard counts', () => {
+    const v = myTurn();
+    v.board!.bag = [12, 10, 9, 14, 11];
+    v.board!.discard = [0, 1, 0, 0, 2];
+    const { getByTestId } = render(Table, { view: v, send: vi.fn() });
+    const text = getByTestId('supply').textContent!.replace(/\s+/g, ' ');
+    expect(text).toContain('Bag 12 10 9 14 11');
+    expect(text).toContain('Discard 0 1 0 0 2');
+  });
+
   it('spectators see no Confirm button', () => {
     const v = { ...myTurn(), you: { email: 'z@x', seat: null }, legal: null };
     const { queryByRole } = render(Table, { view: v, send: vi.fn() });
@@ -1521,6 +1553,7 @@ export const sounds = {
   import OpponentCard from './OpponentCard.svelte';
   import Sheet from './Sheet.svelte';
   import { seatName } from '../lib/names';
+  import { COLOR_NAMES, tileHref } from '../lib/geometry';
   import { oneAtATime } from '../lib/submit';
   import { sounds } from '../lib/sound.svelte';
   import {
@@ -1554,6 +1587,7 @@ export const sounds = {
   const ready = $derived(
     !!legal && (takeMove(sel) !== null || (!!wallSel && !!legal.wall && wallComplete(wallSel, legal.wall))));
   const others = $derived(board.players.map((_, i) => i).filter((i) => i !== mySeat));
+  const piles = $derived([{ label: 'Bag', counts: board.bag }, { label: 'Discard', counts: board.discard }]);
   const pulse = (seat: number) =>
     view.lastMove && view.lastMove.version === view.version && view.lastMove.seat === seat && view.lastMove.kind === 'take'
       ? view.lastMove.row : null;
@@ -1599,6 +1633,13 @@ export const sounds = {
     <CenterView index={centre} counts={board.center} hasFirst={board.centerHasFirst}
       selectedColor={takeSel?.source?.factory === centre ? takeSel.source.color : null}
       canPick={(c) => !!legal && canPick(legal, centre, c)} onPick={(c) => pick(centre, c)} />
+    <div class="supply" data-testid="supply">
+      {#each piles as pile}
+        <span class="pile"><span>{pile.label}</span>
+          {#each pile.counts as n, c}<span class="count"><img src={tileHref(c)} alt={COLOR_NAMES[c]} />{n}</span>{/each}
+        </span>
+      {/each}
+    </div>
   </section>
 
   {#if mySeat !== null}
@@ -1662,6 +1703,10 @@ export const sounds = {
   .table { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
   .factories { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; margin-bottom: 8px; }
   .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .supply { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; color: var(--muted); font-size: 0.9em; }
+  .pile { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .count { display: inline-flex; align-items: center; gap: 2px; }
+  .count img { width: 16px; height: 16px; }
   .others-desktop { display: none; }
   .others-phone { display: grid; gap: 6px; }
   .result .winner { font-weight: 700; }
@@ -1700,13 +1745,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 18: Lobby, seat panel, game page, app shell
 
 **Files:**
-- Create: `web/src/components/Lobby.svelte`, `web/src/components/SeatPanel.svelte`, `web/src/components/GamePage.svelte`
+- Create: `web/src/components/Lobby.svelte`, `web/src/components/SeatPanel.svelte`, `web/src/components/GameControls.svelte`, `web/src/components/GamePage.svelte`
 - Modify: `web/src/App.svelte`
-- Test: `web/src/components/SeatPanel.test.ts`
+- Test: `web/src/components/SeatPanel.test.ts`, `web/src/components/GameControls.test.ts`
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: the running app (used by Task 19's e2e). Buttons the e2e relies on: lobby `2 players` / `3 players` / `4 players`; seat panel `Take this seat`, `Make bot`, `Make open`, `Leave`, `Remove`, `Start`, `Delete game`; game page `Hand my seat to a bot`, `Take my seat back`.
+- Produces: the running app (used by Task 19's e2e). Buttons the e2e relies on: lobby `2 players` / `3 players` / `4 players`; seat panel `Take this seat`, `Make bot`, `Make open`, `Leave`, `Remove`, `Start`, `Delete game`; game page (`GameControls`, spec §4.3) `Hand my seat to a bot`, `Take my seat back`, creator-only `Bot for <name>` and `Delete game` in any status.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1748,10 +1793,56 @@ describe('SeatPanel', () => {
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+`web/src/components/GameControls.test.ts`:
+
+```ts
+import { render } from '@testing-library/svelte';
+import { describe, expect, it, vi } from 'vitest';
+import GameControls from './GameControls.svelte';
+import type { GameView, SeatView } from '../lib/types';
+
+function game(you: string, seats: SeatView[], status: GameView['status'] = 'playing'): GameView {
+  const seat = seats.find((s) => s.email === you)?.idx ?? null;
+  return {
+    id: 'abcdefghij', status, version: 9, numPlayers: seats.length, creator: 'a@x', you: { email: you, seat },
+    seats, board: null, legal: null, lastMove: null, result: null,
+  };
+}
+
+const names = (container: HTMLElement) => [...container.querySelectorAll('button')].map((b) => b.textContent!.trim());
+
+describe('GameControls', () => {
+  it('a seated creator can hand any human seat to a bot and delete', () => {
+    const { container } = render(GameControls, { view: game('a@x', [
+      { idx: 0, kind: 'human', email: 'a@x' }, { idx: 1, kind: 'human', email: 'b@x' }, { idx: 2, kind: 'bot', email: null }]), run: vi.fn() });
+    expect(names(container)).toEqual(['Hand my seat to a bot', 'Bot for b', 'Delete game']);
+  });
+
+  it('an unseated creator still manages the game', () => {
+    const { container } = render(GameControls, { view: game('a@x', [
+      { idx: 0, kind: 'human', email: 'b@x' }, { idx: 1, kind: 'human', email: 'c@x' }]), run: vi.fn() });
+    expect(names(container)).toEqual(['Bot for b', 'Bot for c', 'Delete game']);
+  });
+
+  it('a player only manages their own seat', () => {
+    const seats: SeatView[] = [{ idx: 0, kind: 'human', email: 'a@x' }, { idx: 1, kind: 'human', email: 'b@x' }];
+    expect(names(render(GameControls, { view: game('b@x', seats), run: vi.fn() }).container)).toEqual(['Hand my seat to a bot']);
+    const handed: SeatView[] = [seats[0], { idx: 1, kind: 'bot', email: 'b@x' }];
+    expect(names(render(GameControls, { view: game('b@x', handed), run: vi.fn() }).container)).toEqual(['Take my seat back']);
+  });
+
+  it('a finished game can only be deleted, by its creator', () => {
+    const seats: SeatView[] = [{ idx: 0, kind: 'human', email: 'a@x' }, { idx: 1, kind: 'human', email: 'b@x' }];
+    expect(names(render(GameControls, { view: game('a@x', seats, 'finished'), run: vi.fn() }).container)).toEqual(['Delete game']);
+    expect(names(render(GameControls, { view: game('b@x', seats, 'finished'), run: vi.fn() }).container)).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 2: Run them to verify they fail**
 
 Run: `cd web && npm test`
-Expected: FAIL — `./SeatPanel.svelte` not found.
+Expected: FAIL — `./SeatPanel.svelte` and `./GameControls.svelte` not found.
 
 - [ ] **Step 3: Implement**
 
@@ -1823,22 +1914,68 @@ Expected: FAIL — `./SeatPanel.svelte` not found.
 </style>
 ```
 
+`web/src/components/GameControls.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { GameView } from '../lib/types';
+  import { api } from '../lib/api';
+  import { seatName } from '../lib/names';
+
+  interface Props { view: GameView; run: (action: () => Promise<unknown>) => void }
+  let { view, run }: Props = $props();
+
+  const me = $derived(view.you.email);
+  const mySeat = $derived(view.you.seat);
+  const isCreator = $derived(view.creator === me);
+  const playing = $derived(view.status === 'playing');
+  const handedToBot = $derived(mySeat !== null && view.seats[mySeat].kind === 'bot');
+  const otherHumans = $derived(view.seats.filter((s) => s.kind === 'human' && s.email !== me));
+</script>
+
+<div class="controls">
+  {#if playing && mySeat !== null}
+    {#if handedToBot}
+      <button onclick={() => run(() => api.takeBack(view.id, mySeat))}>Take my seat back</button>
+    {:else}
+      <button onclick={() => { if (confirm('Let a bot play your seat?')) run(() => api.toBot(view.id, mySeat)); }}>Hand my seat to a bot</button>
+    {/if}
+  {/if}
+  {#if playing && isCreator}
+    {#each otherHumans as seat (seat.idx)}
+      <button onclick={() => { if (confirm(`Let a bot play ${seatName(view, seat.idx)}'s seat?`)) run(() => api.toBot(view.id, seat.idx)); }}>
+        Bot for {seatName(view, seat.idx)}
+      </button>
+    {/each}
+  {/if}
+  {#if isCreator}
+    <button class="danger" onclick={() => { if (confirm('Delete this game?')) run(() => api.remove(view.id)); }}>Delete game</button>
+  {/if}
+</div>
+
+<style>
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .danger { color: var(--danger); }
+</style>
+```
+
 `web/src/components/GamePage.svelte`:
 
 ```svelte
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, ApiError, message } from '../lib/api';
-  import { subscribe } from '../lib/events';
+  import { subscribe, type LinkStatus } from '../lib/events';
   import { navigate } from '../lib/router.svelte';
   import { sounds } from '../lib/sound.svelte';
   import type { GameView, MoveBody } from '../lib/types';
   import SeatPanel from './SeatPanel.svelte';
   import Table from './Table.svelte';
+  import GameControls from './GameControls.svelte';
 
   let { id }: { id: string } = $props();
   let view = $state<GameView | null>(null);
-  let link = $state<'connecting' | 'live' | 'reconnecting'>('connecting');
+  let link = $state<'connecting' | LinkStatus>('connecting');
   let notice = $state('');
   let error = $state('');
 
@@ -1905,11 +2042,10 @@ Expected: FAIL — `./SeatPanel.svelte` not found.
     return () => { document.removeEventListener('visibilitychange', update); document.title = 'Azul'; };
   });
 
-  const mySeat = $derived(view?.you.seat ?? null);
-  const handedToBot = $derived(view && mySeat !== null ? view.seats[mySeat].kind === 'bot' : false);
 </script>
 
 {#if link === 'reconnecting'}<div class="banner">Reconnecting…</div>{/if}
+{#if link === 'signed-out'}<div class="banner error">Signed out. Reload the page to sign in again.</div>{/if}
 {#if notice}<div class="banner">{notice}</div>{/if}
 {#if error}<div class="banner error">{error}</div>{/if}
 
@@ -1919,20 +2055,8 @@ Expected: FAIL — `./SeatPanel.svelte` not found.
   <SeatPanel {view} {run} />
 {:else}
   <Table {view} {send} />
-  {#if view.status === 'playing' && mySeat !== null}
-    <p class="seat-actions">
-      {#if handedToBot}
-        <button onclick={() => run(() => api.takeBack(id, mySeat!))}>Take my seat back</button>
-      {:else}
-        <button onclick={() => { if (confirm('Let a bot play your seat?')) run(() => api.toBot(id, mySeat!)); }}>Hand my seat to a bot</button>
-      {/if}
-    </p>
-  {/if}
+  <GameControls {view} {run} />
 {/if}
-
-<style>
-  .seat-actions { margin-top: 16px; }
-</style>
 ```
 
 `web/src/components/Lobby.svelte`:
@@ -2203,6 +2327,7 @@ export async function newGame(page: Page, players: number): Promise<string> {
 /// server auto-plays forced moves after 0.2 s), so the caller just looks again.
 export async function playTurn(page: Page, id: string): Promise<boolean> {
   const v = await view(page, id);
+  if (!v.legal) return false;  // the turn went away (a forced move was auto-played)
   try {
     await expect(page.getByTestId('status')).toHaveAttribute('data-version', String(v.version), { timeout: 15_000 });
     const confirm = page.getByRole('button', { name: 'Confirm' });

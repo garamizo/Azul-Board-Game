@@ -573,8 +573,8 @@ public class CloneTests
     {
         var game = new Game(3, new Random(3));
         var tree = new MCTS_Stochastic<Game, Move>(game, 0f);
-        tree.GrowWhile(5f, 300);
-        Assert.True(tree.numRolls >= 300);
+        for (int i = 0; i < 300; i++) tree.Grow();  // a fixed count, not a time budget
+        Assert.Equal(300, tree.numRolls);
         Assert.True(game.IsValid(tree.GetBestAction()));
     }
 
@@ -588,7 +588,7 @@ public class CloneTests
         Parallel.For(0, games.Length, i =>
         {
             var tree = new MCTS_Stochastic<Game, Move>(games[i], 0f);
-            tree.GrowWhile(5f, 400);
+            for (int r = 0; r < 400; r++) tree.Grow();
             moves[i] = tree.GetBestAction();
         });
         for (int i = 0; i < games.Length; i++)

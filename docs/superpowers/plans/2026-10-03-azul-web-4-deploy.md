@@ -450,7 +450,8 @@ def main():
         "cpu_percent_max": max(cpu) if cpu else None,
     }
     print(json.dumps(report, indent=2))
-    ok = p95 < 200 and all(g <= 15 for i, g in worst_gap.items() if i not in finished)
+    # A game that finished still counts its stalls before it finished.
+    ok = p95 < 200 and all(g <= 15 for g in worst_gap.values())
     print("S4 PASS" if ok else "S4 FAIL")
     raise SystemExit(0 if ok else 1)
 
@@ -652,8 +653,10 @@ also admits them to Catan. No restart. Removing someone takes effect when their 
 - Deploy a change: `git pull && make serve` (games survive; bots resume).
 - Backup: `make backup` (files in `~/backups/azul`). Restore: `make restore FILE=...`.
 - Rotate the tunnel token: <the tunnel page's refresh-token wording from Step 1>, update `.env.serve`, `make serve`.
-- Move to another machine: copy `.env.serve` and a backup, `make serve` there, `make restore FILE=...`,
-  then `make serve-down` here.
+- Move to another machine (never run both at once: two connectors would split players between
+  two databases): here `make serve-down`, then `make backup` (the backup container reads the
+  stopped stack's volume directly). Copy `.env.serve` and the backup to the new machine; there
+  `make serve-app`, `make restore FILE=...`, `make serve-check-local`, then `make serve`.
 
 ## Checking it live
 
@@ -843,7 +846,8 @@ class SetPolicyTests(unittest.TestCase):
         self.assertTrue(path.endswith("/access/apps/app1"))
         self.assertEqual(body["policies"], ["players-policy"])
         for key in asp.READ_ONLY:
-            self.assertNotIn(key, body)
+            if key != "policies":  # stripped, then set by the script
+                self.assertNotIn(key, body)
         self.assertEqual(body["domain"], "catan.signalwave.dev")
         self.assertEqual(body["session_duration"], "24h")
 
@@ -868,6 +872,22 @@ class SetPolicyTests(unittest.TestCase):
         api.put = lambda path, body: dict(original_put(path, body), aud="NEW")
         with self.assertRaises(asp.Refused):
             asp.set_policy(api, "catan.signalwave.dev", "Players", self.backup, dry_run=False, log=lambda *_: None)
+
+    def test_rerun_is_a_no_op_and_keeps_the_original_backup(self):
+        api = FakeApi([catan()], [PLAYERS])
+        asp.set_policy(api, "catan.signalwave.dev", "Players", self.backup, dry_run=False, log=lambda *_: None)
+        asp.set_policy(api, "catan.signalwave.dev", "Players", self.backup, dry_run=False, log=lambda *_: None)
+        self.assertEqual(len(api.writes), 1)
+        with open(self.backup) as f:
+            self.assertEqual(json.load(f)["policies"][0]["id"], "friends")
+
+    def test_an_existing_backup_is_never_overwritten(self):
+        with open(self.backup, "w") as f:
+            f.write("{}")
+        api = FakeApi([catan()], [PLAYERS])
+        with self.assertRaises(asp.Refused):
+            asp.set_policy(api, "catan.signalwave.dev", "Players", self.backup, dry_run=False, log=lambda *_: None)
+        self.assertEqual(api.writes, [])
 
     def test_restore_puts_back_the_saved_policies(self):
         api = FakeApi([catan()], [PLAYERS])
@@ -1000,9 +1020,13 @@ def find_policy(api, acct, name):
 
 
 def write_backup(path, app):
+    """Creates the backup; never replaces one (it holds the original configuration)."""
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise Refused(f"{path} already exists and may hold the original configuration; move it away first")
     with os.fdopen(fd, "w") as f:
         json.dump(app, f, indent=2)
 
@@ -1024,10 +1048,17 @@ def update(api, acct, app, policy_ids, dry_run, log):
     return result
 
 
+def policy_ids(app):
+    return [p["id"] for p in sorted(app.get("policies") or [], key=lambda p: p.get("precedence", 0))]
+
+
 def set_policy(api, hostname, policy_name, backup, dry_run, log=print):
     acct = account(api)
     app = find_app(api, acct, hostname)
     policy = find_policy(api, acct, policy_name)
+    if policy_ids(app) == [policy["id"]]:
+        log(f"{hostname} already uses only {policy_name!r}; nothing to do")
+        return app
     if not dry_run:
         write_backup(backup, app)
         log(f"saved {hostname} to {backup}")
@@ -1071,7 +1102,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run the tests**
 
 Run: `cd scripts && python3 -m unittest test_access_set_policy -v`
-Expected: 5 tests pass.
+Expected: 7 tests pass.
 
 - [ ] **Step 6: Commit**
 
