@@ -29,5 +29,9 @@
   .factory { width: 100%; height: auto; display: block; }
   .factory.empty { opacity: 0.35; }
   .tile.pickable { cursor: pointer; }
+  .tile { transition: transform 120ms ease-out; transform-box: fill-box; transform-origin: center; }
+  @media (hover: hover) {
+    .tile.pickable:hover, .tile.pickable:focus-visible { transform: translateY(-2px); filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.35)); }
+  }
   .tile.selected { outline: 3px solid var(--accent); filter: drop-shadow(0 0 6px var(--accent)); }
 </style>

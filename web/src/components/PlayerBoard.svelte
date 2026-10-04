@@ -93,9 +93,12 @@
   .extra, .ghost-count { font-size: 34px; font-weight: 700; fill: #a8321f; }
   .ghost { opacity: 0.5; }
   .hit { fill: transparent; stroke: transparent; stroke-width: 6; cursor: default; }
-  .hit.legal { stroke: var(--accent); stroke-dasharray: 12 8; cursor: pointer; }
-  .hit.target { stroke: var(--accent); stroke-dasharray: 12 8; cursor: pointer; }
-  .hit.chosen { stroke: var(--accent); stroke-dasharray: none; fill: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .hit.legal, .hit.target { fill: color-mix(in srgb, var(--accent) 16%, transparent);
+    stroke: color-mix(in srgb, var(--accent) 60%, transparent); stroke-width: 3; cursor: pointer;
+    animation: legal 1.6s ease-in-out infinite alternate; }
+  .hit.chosen { fill: color-mix(in srgb, var(--accent) 28%, transparent); stroke: var(--accent); stroke-width: 4; animation: none; }
   .hit.pulse { animation: pulse 600ms ease-out; }
+  @keyframes legal { from { fill: color-mix(in srgb, var(--accent) 10%, transparent); }
+    to { fill: color-mix(in srgb, var(--accent) 22%, transparent); } }
   @keyframes pulse { from { fill: rgba(255, 196, 0, 0.55); } to { fill: transparent; } }
 </style>

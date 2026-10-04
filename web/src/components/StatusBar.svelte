@@ -16,7 +16,7 @@
     <strong data-testid="auto-play">{board.phase === 'wall' ? 'Scoring your wall…'
       : board.centerHasFirst ? 'Taking the first-player marker…' : 'Your only move is being played…'}</strong>
   {:else if yourTurn}
-    <strong data-testid="your-turn">Your turn{board.phase === 'wall' ? ': place your tiles' : ''}</strong>
+    <strong class="pill" data-testid="your-turn">Your turn{board.phase === 'wall' ? ': place your tiles' : ''}</strong>
   {:else}
     <span class="truncate">{seatName(view, board.activeSeat)} is {board.phase === 'wall' ? 'placing tiles' : 'choosing'}…</span>
   {/if}
@@ -35,5 +35,8 @@
   .scores { display: flex; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
   .score { max-width: 12em; color: var(--muted); font-family: var(--display); }
   .score.active { color: var(--fg); font-weight: 700; }
+  .pill { background: var(--accent); color: var(--accent-ink); padding: 4px 12px; border-radius: 999px;
+    animation: pill-in 600ms ease-out; }
+  @keyframes pill-in { 0% { transform: scale(0.85); opacity: 0; } 60% { transform: scale(1.05); opacity: 1; } }
   .mute { margin-left: auto; padding: 4px 8px; }
 </style>

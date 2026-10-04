@@ -74,6 +74,11 @@ describe('Table', () => {
     expect(getByTestId('auto-play').textContent).toContain('Taking the first-player marker…');
   });
 
+  it('your turn is a pill', () => {
+    const { getByTestId } = render(Table, { view: myTurn(), send: vi.fn() });
+    expect(getByTestId('your-turn').classList.contains('pill')).toBe(true);
+  });
+
   it('spectators see no Confirm button', () => {
     const v = { ...myTurn(), you: { email: 'z@x', seat: null }, legal: null };
     const { queryByRole } = render(Table, { view: v, send: vi.fn() });

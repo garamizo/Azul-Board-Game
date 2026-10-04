@@ -43,6 +43,8 @@
   .badge { position: absolute; right: -6px; bottom: -6px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
     background: var(--card); color: var(--fg); font-size: 12px; font-weight: 700; line-height: 18px; text-align: center;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); }
+  .group { transition: transform 120ms ease-out; }
+  @media (hover: hover) { .group:not(:disabled):hover { transform: translateY(-2px); } }
   .group.selected { outline: 3px solid var(--accent); outline-offset: 2px; }
   .empty { color: rgba(255, 255, 255, 0.8); font-size: 0.9em; }
   @media (min-width: 900px) { .group, .group img { width: 44px; height: 44px; } }
