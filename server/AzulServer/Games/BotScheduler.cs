@@ -19,13 +19,21 @@ public sealed class GreedyBrain : IBotBrain
 /// own clone, greedy when the search found nothing (game.py:261).
 public sealed class MctsBrain(AzulOptions options) : IBotBrain
 {
+    /// The search stops here even with think time left.
+    public const int RolloutCap = 300_000;
+    /// Part of the bot's hub key (Hub/BotIdentity.cs). Bump it whenever this
+    /// class's logic changes how a move is chosen (the greedy fallback, the
+    /// stopping rule, the final pick), so the hub rates the changed bot as a
+    /// new account.
+    public const int BrainRevision = 1;
+
     public Move ChooseMove(Game game, CancellationToken ct)
     {
         var root = new MCTS_Stochastic<Game, Move>(game, 0.0f);  // clones the game
         var clock = Stopwatch.StartNew();
         while (!ct.IsCancellationRequested
                && clock.Elapsed.TotalSeconds < options.BotThinkSeconds
-               && root.numRolls < 300_000)
+               && root.numRolls < RolloutCap)
             root.Grow();
         if (root.actions.Count == 0) return game.GetGreedyMove();
         int best = root.GetBestActionIdx();

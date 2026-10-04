@@ -3,6 +3,7 @@ using AzulServer.Api;
 using AzulServer.Auth;
 using AzulServer.Data;
 using AzulServer.Games;
+using AzulServer.Hub;
 using Microsoft.Extensions.FileProviders;
 
 if (args.Contains("--healthcheck"))
@@ -22,11 +23,13 @@ builder.Services.AddSingleton<ServerMoveQueue>();
 builder.Services.AddSingleton<IFaultInjector, NoFaults>();
 builder.Services.AddSingleton<GameService>();
 builder.Services.AddSingleton<IBotBrain, MctsBrain>();
+builder.Services.AddSingleton(sp => BotIdentity.For(sp.GetRequiredService<AzulOptions>()));
 builder.Services.AddHostedService<BotScheduler>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<AzulOptions>();  // fail fast on bad configuration
 app.Services.GetRequiredService<Db>().Migrate();
+app.Logger.LogInformation("bot key {Key}", app.Services.GetRequiredService<BotIdentity>().Key);
 
 // Unhandled errors (a corrupt stored game, say) answer 500 for that request
 // only, as JSON; TestServer would otherwise rethrow them into the test.
