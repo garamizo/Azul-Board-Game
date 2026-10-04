@@ -37,6 +37,11 @@ public sealed record AzulOptions
             if (team.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) team = team[8..];
             team = team.TrimEnd('/');
         }
+        var hubUrl = Get("AZUL_HUB_URL")?.TrimEnd('/');
+        if (hubUrl is not null && !(Uri.TryCreate(hubUrl, UriKind.Absolute, out var hub)
+                                    && (hub.Scheme == Uri.UriSchemeHttp || hub.Scheme == Uri.UriSchemeHttps)))
+            throw new InvalidOperationException(
+                $"AZUL_HUB_URL must be an absolute http(s) URL such as http://playhub:3000, not \"{hubUrl}\".");
         return new AzulOptions
         {
             TeamDomain = team,
@@ -52,7 +57,7 @@ public sealed record AzulOptions
             SseMaxMinutes = Num("AZUL_SSE_MAX_MINUTES", 30),
             Hub = new HubOptions
             {
-                Url = Get("AZUL_HUB_URL")?.TrimEnd('/'),
+                Url = hubUrl,
                 Key = Get("AZUL_HUB_KEY"),
                 PublicUrl = Get("AZUL_HUB_PUBLIC_URL")?.TrimEnd('/'),
             },

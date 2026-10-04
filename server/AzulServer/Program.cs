@@ -27,7 +27,8 @@ builder.Services.AddSingleton<GameService>();
 builder.Services.AddSingleton<IBotBrain, MctsBrain>();
 builder.Services.AddSingleton(sp => BotIdentity.For(sp.GetRequiredService<AzulOptions>()));
 builder.Services.AddHostedService<BotScheduler>();
-builder.Services.AddHttpClient(HubSender.HttpName, c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddHttpClient(HubSender.HttpName, c => c.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(HubSender.PrimaryHandler);
 builder.Services.AddHostedService<HubSender>();
 
 var app = builder.Build();

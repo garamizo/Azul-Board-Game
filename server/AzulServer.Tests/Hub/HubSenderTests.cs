@@ -53,6 +53,10 @@ public sealed class HubSenderTests : IDisposable
     [InlineData(403, HubSender.Outcome.RetryConfig)]
     [InlineData(404, HubSender.Outcome.RetryConfig)]
     [InlineData(413, HubSender.Outcome.RetryConfig)]
+    [InlineData(301, HubSender.Outcome.RetryConfig)]
+    [InlineData(302, HubSender.Outcome.RetryConfig)]
+    [InlineData(307, HubSender.Outcome.RetryConfig)]
+    [InlineData(308, HubSender.Outcome.RetryConfig)]
     public void StatusesMapToTheHubContract(int? status, HubSender.Outcome expected) =>
         Assert.Equal(expected, HubSender.Classify(status));
 
@@ -188,15 +192,19 @@ public sealed class HubSenderTests : IDisposable
         Assert.Equal("sent", Row("del").Status);
     }
 
-    [Fact]
-    public async Task WithoutBothSettingsTheSenderStaysOff()
+    [Theory]
+    [InlineData("http://hub.test", null, 1)]
+    [InlineData(null, "phk_test", 1)]
+    [InlineData(null, null, 0)]
+    public async Task WithoutBothSettingsTheSenderStaysOff(string? url, string? key, int warnings)
     {
         QueueRow("g");
-        var off = Sender(new HubOptions { Url = "http://hub.test" });
+        var off = Sender(new HubOptions { Url = url, Key = key });
         await off.StartAsync(default);
         await off.ExecuteTask!;
         Assert.Empty(hubHttp.Requests);
-        Assert.Equal(1, log.Count(LogLevel.Warning, "both AZUL_HUB_URL and AZUL_HUB_KEY"));
+        Assert.Equal(warnings, log.Count(LogLevel.Warning, "both AZUL_HUB_URL and AZUL_HUB_KEY"));
+        Assert.Equal(warnings, log.Entries.Count);
     }
 
     [Fact]
@@ -206,12 +214,68 @@ public sealed class HubSenderTests : IDisposable
         var sender = new HubSender(db, new AzulOptions { Hub = Configured }, signal, hubHttp, TimeProvider.System, log);
         using (var c = db.Open()) { using var cmd = c.CreateCommand(); cmd.CommandText = "ALTER TABLE hub_reports RENAME TO hub_reports_away"; cmd.ExecuteNonQuery(); }
         await sender.StartAsync(default);
-        await WaitUntil(() => log.Count(LogLevel.Error, "cycle failed") >= 1);
-        using (var c = db.Open()) { using var cmd = c.CreateCommand(); cmd.CommandText = "ALTER TABLE hub_reports_away RENAME TO hub_reports"; cmd.ExecuteNonQuery(); }
+        try
+        {
+            await WaitUntil(() => log.Count(LogLevel.Error, "cycle failed") >= 1);
+            using (var c = db.Open()) { using var cmd = c.CreateCommand(); cmd.CommandText = "ALTER TABLE hub_reports_away RENAME TO hub_reports"; cmd.ExecuteNonQuery(); }
+            QueueRow("g");
+            signal.Wake();
+            await WaitUntil(() => hubHttp.Requests.Count == 1);
+        }
+        finally
+        {
+            await sender.StopAsync(default);
+        }
+    }
+
+    [Fact]
+    public async Task AShutdownDuringASendRecordsNothing()
+    {
         QueueRow("g");
-        signal.Wake();
+        hubHttp.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cts = new CancellationTokenSource();
+        var cycle = Sender().RunCycleAsync(cts.Token);
         await WaitUntil(() => hubHttp.Requests.Count == 1);
-        await sender.StopAsync(default);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cycle);
+        var row = Row("g");
+        Assert.Equal(("pending", 0, (int?)null), (row.Status, row.Attempts, row.LastStatus));
+        Assert.NotNull(row.LeaseId);   // the lease simply expires and the row is retried
+        Assert.Equal(0, log.Count(LogLevel.Warning, "unavailable"));
+        Assert.Equal(0, log.Count(LogLevel.Error, "could not be sent"));
+    }
+
+    [Fact]
+    public async Task AnUnbuildableGameIsReportedOncePerProcess()
+    {
+        using (var c = db.Open())
+        using (var tx = c.BeginTransaction())
+        {
+            GameStore.Insert(c, tx, Finished("keyless", [Human(0, "alice@example.com"), Bot(1)]) with { BotKey = null });
+            tx.Commit();
+        }
+        var sender = Sender();
+        await sender.RunCycleAsync(default);
+        await sender.RunCycleAsync(default);
+        await sender.RunCycleAsync(default);
+        Assert.Equal(1, log.Count(LogLevel.Error, "cannot be built"));
+        Assert.Equal(2, log.Count(LogLevel.Debug, "cannot be built"));
+        Assert.Empty(hubHttp.Requests);
+    }
+
+    [Fact]
+    public void TheHubClientDoesNotFollowRedirects() =>
+        // A redirect (Cloudflare Access sending the request to its login page)
+        // must surface as a 3xx, not as the 200 of the page it leads to.
+        Assert.False(HubSender.PrimaryHandler().AllowAutoRedirect);
+
+    [Fact]
+    public void TheAppUsesTheNonRedirectingHandler()
+    {
+        using var app = new TestApp();
+        HttpMessageHandler h = app.Service<IHttpMessageHandlerFactory>().CreateHandler(HubSender.HttpName);
+        while (h is DelegatingHandler d) h = d.InnerHandler!;
+        Assert.False(Assert.IsType<SocketsHttpHandler>(h).AllowAutoRedirect);
     }
 
     static async Task WaitUntil(Func<bool> done, int seconds = 10)

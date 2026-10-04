@@ -12,6 +12,8 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
     public const string HttpName = "hub";
     static readonly TimeSpan Lease = TimeSpan.FromMinutes(5);
     static readonly TimeSpan Stuck = TimeSpan.FromHours(1);
+    /// Games whose report reconcile has already logged as an error.
+    readonly HashSet<string> reconcileErrors = new();
 
     /// How long an idle sender waits for a wake before its next cycle.
     public TimeSpan IdleWait { get; init; } = TimeSpan.FromSeconds(60);
@@ -31,6 +33,11 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
 
     public static TimeSpan Backoff(int attempts, double jitter01) =>
         TimeSpan.FromSeconds(Math.Min(60 * Math.Pow(2, attempts - 1), 3600) * (1 + 0.1 * jitter01));
+
+    /// The "hub" client's handler. Redirects are not followed: Cloudflare
+    /// Access answers a public-hostname URL with 302 to its login page, which
+    /// a following client would fetch with GET and see as a 200 "sent".
+    public static SocketsHttpHandler PrimaryHandler() => new() { AllowAutoRedirect = false };
 
     static string Stamp(DateTimeOffset t) => t.UtcDateTime.ToString("O");
 
@@ -59,7 +66,7 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
     public async Task<int> RunCycleAsync(CancellationToken ct)
     {
         var now = time.GetUtcNow();
-        HubOutbox.QueueMissing(db, options.PublicOrigin, Stamp(now), log);
+        HubOutbox.QueueMissing(db, options.PublicOrigin, Stamp(now), log, reconcileErrors);
         List<string> due;
         using (var c = db.Open()) due = HubOutbox.DueIds(c, Stamp(now), 50);
         int sent = 0;

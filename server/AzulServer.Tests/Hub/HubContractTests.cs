@@ -31,6 +31,22 @@ public class HubContractTests
     }
 
     [Theory]
+    [InlineData("playhub:3000")]
+    [InlineData("playhub.example/api")]
+    [InlineData("/hub")]
+    [InlineData("ftp://playhub")]
+    [InlineData("http//playhub")]
+    public void AHubUrlThatIsNotAbsoluteHttpFailsFast(string url) =>
+        Assert.Contains("AZUL_HUB_URL", Assert.Throws<InvalidOperationException>(() =>
+            AzulOptions.FromEnvironment(k => k == "AZUL_HUB_URL" ? url : null)).Message);
+
+    [Theory]
+    [InlineData("https://play.example")]
+    [InlineData("http://playhub:3000/")]
+    public void AnAbsoluteHttpHubUrlIsAccepted(string url) =>
+        Assert.NotNull(AzulOptions.FromEnvironment(k => k == "AZUL_HUB_URL" ? url : null).Hub.Url);
+
+    [Theory]
     [InlineData("Ann@Example.com", "ann@example.com")]
     [InlineData(" a.b+c@sub.example.co ", "a.b+c@sub.example.co")]
     [InlineData("dev@localhost", null)]

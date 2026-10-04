@@ -77,9 +77,12 @@ public static class HubOutbox
     /// Reconcile (spec 6.2): build and queue each finished tracked game that
     /// has no report. One BEGIN IMMEDIATE transaction per game (deferred:
     /// false) reads it and writes the row, so a concurrent Delete cannot
-    /// interleave.
-    public static int QueueMissing(Db db, string? publicOrigin, string now, ILogger log)
+    /// interleave. With `logged`, each game's failure is an error the first
+    /// time only (later cycles log it at debug), so a game that stays
+    /// unbuildable does not log an error every cycle.
+    public static int QueueMissing(Db db, string? publicOrigin, string now, ILogger log, ISet<string>? logged = null)
     {
+        LogLevel Level(string id) => logged is null || logged.Add(id) ? LogLevel.Error : LogLevel.Debug;
         List<string> ids;
         using (var c = db.Open()) ids = MissingIds(c);
         int queued = 0;
@@ -94,7 +97,7 @@ public static class HubOutbox
                 var built = HubReport.Build(g, HubReport.BotPlayedSeats(c, tx, id, null), publicOrigin);
                 if (built.Body is null)
                 {
-                    log.LogError("hub report for game {Game} cannot be built: {Reason}", id, built.Skip);
+                    log.Log(Level(id), "hub report for game {Game} cannot be built: {Reason}", id, built.Skip);
                     continue;
                 }
                 if (Queue(c, tx, id, built.Body, now)) queued++;
@@ -102,7 +105,7 @@ public static class HubOutbox
             }
             catch (Exception e)
             {
-                log.LogError(e, "hub report for game {Game} could not be queued", id);
+                log.Log(Level(id), e, "hub report for game {Game} could not be queued", id);
             }
         }
         return queued;
