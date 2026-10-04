@@ -15,6 +15,7 @@ public static class ApiEndpoints
 
         var api = app.MapGroup("/api");
         api.MapGet("/me", (HttpContext c) => Results.Json(new { email = c.Email() }));
+        api.MapGet("/games/{id}/events", EventStream.Handle);
         api.MapGet("/games", (GameService s) => Results.Json(s.List(), Json.Options));
         api.MapPost("/games", (HttpContext c, GameService s, CreateGameRequest r) => s.Create(c.Email(), r.Players).ToHttp());
         api.MapGet("/games/{id}", (HttpContext c, GameService s, string id) =>
