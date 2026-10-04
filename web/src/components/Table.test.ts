@@ -52,11 +52,10 @@ describe('Table', () => {
     const v = myTurn();
     v.board!.bag = [12, 10, 9, 14, 11];
     v.board!.discard = [0, 1, 0, 0, 2];
-    const { getByTestId } = render(Table, { view: v, send: vi.fn() });
-    const text = getByTestId('supply').textContent!.replace(/\s+/g, ' ');
-    expect(text).toContain('Discard 0 1 0 0 2');
-    expect(text).not.toContain('Bag');
-    expect(text).not.toContain('12');
+    const { container, getByTestId } = render(Table, { view: v, send: vi.fn() });
+    expect(getByTestId('supply').textContent!.replace(/\s+/g, ' ')).toContain('Discard 0 1 0 0 2');
+    expect(container.textContent).not.toMatch(/bag/i);
+    expect(container.textContent).not.toContain('12');
   });
 
   it('a forced turn shows the auto-play step, not Your turn or Confirm', () => {
