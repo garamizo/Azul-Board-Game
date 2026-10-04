@@ -89,13 +89,13 @@
 
 <style>
   .board { width: 100%; height: auto; display: block; user-select: none; }
-  .label { font-size: 40px; font-weight: 700; fill: #2b2118; paint-order: stroke; stroke: #f6efe4; stroke-width: 6px; }
+  .label { font-family: var(--display); font-size: 40px; font-weight: 700; fill: #2b2118; paint-order: stroke; stroke: #f6efe4; stroke-width: 6px; }
   .extra, .ghost-count { font-size: 34px; font-weight: 700; fill: #a8321f; }
   .ghost { opacity: 0.5; }
   .hit { fill: transparent; stroke: transparent; stroke-width: 6; cursor: default; }
-  .hit.legal { stroke: #1f5fa8; stroke-dasharray: 12 8; cursor: pointer; }
-  .hit.target { stroke: #1f5fa8; stroke-dasharray: 12 8; cursor: pointer; }
-  .hit.chosen { stroke: #1f5fa8; stroke-dasharray: none; fill: rgba(31, 95, 168, 0.12); }
+  .hit.legal { stroke: var(--accent); stroke-dasharray: 12 8; cursor: pointer; }
+  .hit.target { stroke: var(--accent); stroke-dasharray: 12 8; cursor: pointer; }
+  .hit.chosen { stroke: var(--accent); stroke-dasharray: none; fill: color-mix(in srgb, var(--accent) 12%, transparent); }
   .hit.pulse { animation: pulse 600ms ease-out; }
   @keyframes pulse { from { fill: rgba(255, 196, 0, 0.55); } to { fill: transparent; } }
 </style>

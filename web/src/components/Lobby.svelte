@@ -57,7 +57,7 @@
 {#if notice}<div class="banner">{notice}</div>{/if}
 {#if error}<div class="banner error">{error}</div>{/if}
 
-<section>
+<section class="panel">
   <h2>New game</h2>
   <div class="new">
     {#each [2, 3, 4] as n}
@@ -68,7 +68,7 @@
 
 {#each sections as section}
   {#if section.list.length > 0}
-    <section>
+    <section class="panel">
       <h2>{section.title}</h2>
       <ul class="games">
         {#each section.list as g (g.id)}
@@ -80,6 +80,8 @@
 {/each}
 
 <style>
+  section + section { margin-top: 12px; }
+  h2 { margin-top: 0; }
   .new { display: flex; gap: 8px; flex-wrap: wrap; }
   .games { padding-left: 1.2em; display: grid; gap: 6px; }
   .games a { display: block; max-width: 100%; }

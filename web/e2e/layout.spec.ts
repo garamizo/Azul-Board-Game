@@ -40,3 +40,10 @@ for (const width of [900, 1440]) {
     });
   }
 }
+
+test('dark mode follows the system setting', async ({ browser }) => {
+  const page = await person(browser, 'alice@example.com', { width: 900, height: 900 }, { colorScheme: 'dark' });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '2 players' })).toBeVisible();
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(15, 26, 43)');
+});

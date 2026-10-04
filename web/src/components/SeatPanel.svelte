@@ -16,7 +16,7 @@
   }
 </script>
 
-<section class="lobby">
+<section class="lobby panel">
   <h2>Waiting for players</h2>
   <p>Share this page's address with friends. Empty seats become bots when the game starts.
     <button onclick={share}>{copied ? 'Copied' : 'Copy link'}</button></p>
@@ -54,6 +54,7 @@
 </section>
 
 <style>
+  h2 { margin-top: 0; }
   .seats { padding-left: 1.2em; display: grid; gap: 8px; }
   .seats li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
   .who { max-width: 60vw; }

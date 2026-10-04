@@ -29,5 +29,5 @@
   .factory { width: 100%; height: auto; display: block; }
   .factory.empty { opacity: 0.35; }
   .tile.pickable { cursor: pointer; }
-  .tile.selected { outline: 3px solid #1f5fa8; filter: drop-shadow(0 0 6px #1f5fa8); }
+  .tile.selected { outline: 3px solid var(--accent); filter: drop-shadow(0 0 6px var(--accent)); }
 </style>

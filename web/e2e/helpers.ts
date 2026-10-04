@@ -1,9 +1,12 @@
-import { expect, type Browser, type Page } from '@playwright/test';
+import { expect, type Browser, type BrowserContextOptions, type Page } from '@playwright/test';
 
 export const BASE = 'http://127.0.0.1:5081';
 
-export async function person(browser: Browser, email: string, viewport: { width: number; height: number }) {
-  const context = await browser.newContext({ viewport });
+/// Contexts default to reduced motion so tile flights never slow the suite or
+/// sit over a click; pass `{ reducedMotion: 'no-preference' }` to see them.
+export async function person(browser: Browser, email: string, viewport: { width: number; height: number },
+  options: BrowserContextOptions = {}) {
+  const context = await browser.newContext({ reducedMotion: 'reduce', ...options, viewport });
   await context.addCookies([{ name: 'azul_dev_user', value: email, url: BASE }]);
   return context.newPage();
 }

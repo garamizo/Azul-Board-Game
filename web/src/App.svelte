@@ -12,11 +12,13 @@
 </script>
 
 <header class="top">
-  <a class="logo" href="/" onclick={(e) => { e.preventDefault(); navigate('/'); }}>Azul</a>
-  {#if email}
-    <span class="who truncate" title={email}>{email}</span>
-    <a href="/cdn-cgi/access/logout">Sign out</a>
-  {/if}
+  <div class="inner">
+    <a class="logo" href="/" onclick={(e) => { e.preventDefault(); navigate('/'); }}>Azul</a>
+    {#if email}
+      <span class="who truncate" title={email}>{email}</span>
+      <a href="/cdn-cgi/access/logout">Sign out</a>
+    {/if}
+  </div>
 </header>
 
 <main>
@@ -28,7 +30,10 @@
 </main>
 
 <style>
-  .top { display: flex; gap: 10px; align-items: center; padding: 10px 12px; max-width: 1280px; margin: 0 auto; }
-  .logo { font-weight: 800; font-size: 1.3em; color: var(--accent); text-decoration: none; margin-right: auto; }
-  .who { max-width: 45vw; color: var(--muted); }
+  .top { background: var(--header); color: var(--header-ink); box-shadow: var(--shadow); }
+  .inner { display: flex; gap: 10px; align-items: center; padding: 10px 12px; max-width: 1280px; margin: 0 auto; }
+  .top a { color: var(--header-ink); }
+  .logo { font-family: var(--display); font-weight: 700; font-size: 1.4em; letter-spacing: 0.14em;
+    text-transform: uppercase; text-decoration: none; margin-right: auto; }
+  .who { max-width: 45vw; opacity: 0.75; }
 </style>

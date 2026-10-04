@@ -33,7 +33,7 @@
 <style>
   .status { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 0; min-width: 0; }
   .scores { display: flex; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
-  .score { max-width: 12em; color: var(--muted); }
+  .score { max-width: 12em; color: var(--muted); font-family: var(--display); }
   .score.active { color: var(--fg); font-weight: 700; }
   .mute { margin-left: auto; padding: 4px 8px; }
 </style>

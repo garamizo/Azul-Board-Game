@@ -26,5 +26,5 @@
   .chooser { display: grid; gap: 6px; }
   .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .row.active span { font-weight: 700; }
-  button.chosen { background: var(--accent); color: white; }
+  button.chosen { background: var(--accent); color: var(--accent-ink); }
 </style>

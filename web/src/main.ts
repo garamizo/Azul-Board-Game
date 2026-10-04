@@ -1,5 +1,7 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
+import '@fontsource/cinzel/600.css';
+import '@fontsource/cinzel/700.css';
 import './app.css';
 
 // Dev mode only: /?as=bob@example.com picks who you are (the server ignores
