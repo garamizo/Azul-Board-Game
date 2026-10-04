@@ -8,7 +8,7 @@
     using DeepCopy;
     using System.Drawing;
 
-    public class Game : GameUtils.Game<Move>
+    public partial class Game : GameUtils.Game<Move>
     {
         public int numFactories;  // not counting center (factories[-1])
         public int roundIdx = 0;
@@ -23,8 +23,9 @@
         public int[] bag = new int[NUM_COLORS];  // numTiles per color
         public int[] discarded = new int[NUM_COLORS];  // numTiles per color
         public int[] factoryIdxArray;
-        static int[] rowIdxArray = new int[ROWS + 1];
-        static int[] colorIdxArray = new int[NUM_COLORS];
+        // Shuffled in place during move generation, so each game owns its own.
+        int[] rowIdxArray = { 0, 1, 2, 3, 4, 5 };
+        int[] colorIdxArray = { 0, 1, 2, 3, 4 };
         public int CENTER;
         public const int EMPTY_TILE = -1;
         public bool isRegularPhase = true;
@@ -38,8 +39,11 @@
 
         // }
 
-        public Game(int numPlayers)
+        public Game(int numPlayers) : this(numPlayers, new Random()) { }
+
+        public Game(int numPlayers, Random rng)
         {
+            this.rng = rng;  // before FillFactories, which draws from it
             this.numPlayers = numPlayers;
             numFactories = FactoriesVsPlayer(numPlayers);
             CENTER = numFactories;
@@ -64,10 +68,6 @@
             factoryIdxArray = new int[numFactories + 1];  // update size
             for (int i = 0; i < numFactories + 1; i++)
                 factoryIdxArray[i] = i;
-            for (int i = 0; i < Constants.numRows + 1; i++)
-                rowIdxArray[i] = i;
-            for (int i = 0; i < Constants.numColors; i++)
-                colorIdxArray[i] = i;
         }
 
         public Game() : this(2) { }
@@ -1810,4 +1810,4 @@
         FIVES,
         FLOOR = 5,
     }
-}
+}

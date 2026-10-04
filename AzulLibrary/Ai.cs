@@ -182,7 +182,7 @@ namespace Ai
         public int actionIdx;  // parent + actionIdx => this
         public int numRolls = 0;
         public float numWins = 0;  // wins for parent.activePlayer
-        public static float c = MathF.Sqrt(2.0f);
+        public static readonly float c = MathF.Sqrt(2.0f);
         // Func<float[], float[]> rewardMap = RewardMap.Passthrough;
         float eGreedy;
         public int rootPlayer = 0;

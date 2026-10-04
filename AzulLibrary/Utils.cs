@@ -233,7 +233,8 @@ interface IGame<TMove>
 
 public abstract class Game<M>
 {
-    public static Random rng = new();
+    // Per game, never shared: games and MCTS clones run on different threads.
+    public Random rng = new();
     public int activePlayer;
     public int numPlayers;
     public int step;
