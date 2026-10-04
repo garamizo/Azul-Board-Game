@@ -16,3 +16,9 @@ Game boards are detected in two stages:
 ## Game UI
 
 <img src="img/ui.png" width=600 alt="ui"/>
+
+## Play online
+
+The game runs as a web app for invited friends at https://azul.signalwave.dev (server in
+`server/`, browser client in `web/`). Publishing and operations: [docs/deploy.md](docs/deploy.md).
+Local development: `make test`, `make dev-server`, `cd web && npm run dev`.
