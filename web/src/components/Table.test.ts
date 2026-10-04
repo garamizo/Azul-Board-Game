@@ -1,7 +1,8 @@
 import { fireEvent, render } from '@testing-library/svelte';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 import Table from './Table.svelte';
-import type { GameView, MoveBody } from '../lib/types';
+import type { GameView, MoveBody, PlayerView } from '../lib/types';
 
 function myTurn(): GameView {
   const empty = [-1, -1, -1, -1, -1];
@@ -83,5 +84,103 @@ describe('Table', () => {
     const v = { ...myTurn(), you: { email: 'z@x', seat: null }, legal: null };
     const { queryByRole } = render(Table, { view: v, send: vi.fn() });
     expect(queryByRole('button', { name: 'Confirm' })).toBeNull();
+  });
+});
+
+describe('Table: tile flight', () => {
+  const empty = [-1, -1, -1, -1, -1];
+  const fresh = (): PlayerView => ({ score: 0, lines: [null, null, null, null, null], wall: [empty, empty, empty, empty, empty], floor: [], hasFirst: false });
+  function watching(version: number): GameView {
+    const v = myTurn();
+    v.version = version;
+    v.legal = null;
+    v.board!.players = [fresh(), fresh()];
+    return v;
+  }
+  function botTook(version: number, edit: (v: GameView) => void = () => {}): GameView {
+    const v = watching(version);
+    v.board!.players[1] = { ...fresh(), lines: [null, null, null, [2, 3], null], floor: [2] };
+    v.lastMove = { version, seat: 1, kind: 'take', factory: 2, color: 2, row: 3, tiles: 4, columns: null };
+    edit(v);
+    return v;
+  }
+  let land: () => void;
+  beforeEach(() => {
+    const finished = new Promise<void>((r) => (land = r));
+    (Element.prototype as unknown as { animate: unknown }).animate = vi.fn(() => ({ finished, cancel: vi.fn() }));
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 50, 50));
+  });
+  afterEach(() => {
+    delete (Element.prototype as unknown as { animate?: unknown }).animate;
+    vi.restoreAllMocks();
+  });
+  const sprites = () => document.querySelectorAll('.flight img.sprite');
+
+  it('a consecutive take flies the tiles, hides them until they land, then shows them', async () => {
+    const { container, rerender } = render(Table, { view: watching(7), send: vi.fn() });
+    await rerender({ view: botTook(8), send: vi.fn() });
+    await vi.waitFor(() => expect(sprites()).toHaveLength(4));   // 3 to line 4, 1 to the floor
+    expect(container.querySelectorAll('.others-desktop image.tile.arriving')).toHaveLength(4);
+    land();
+    await vi.waitFor(() => expect(sprites()).toHaveLength(0));
+    expect(container.querySelectorAll('image.tile.arriving')).toHaveLength(0);
+  });
+
+  it('reduced motion flies nothing even with Web Animations', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((q: string) =>
+      ({ matches: q.includes('reduce'), media: q, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList);
+    const { container, rerender } = render(Table, { view: watching(7), send: vi.fn() });
+    await rerender({ view: botTook(8), send: vi.fn() });
+    await tick();
+    expect(sprites()).toHaveLength(0);
+    expect(container.querySelectorAll('image.tile.arriving')).toHaveLength(0);
+  });
+
+  it('a version jump flies nothing and hides nothing (guard: passes before the feature too)', async () => {
+    const { container, rerender } = render(Table, { view: watching(6), send: vi.fn() });
+    await rerender({ view: botTook(8), send: vi.fn() });
+    await tick();
+    expect(sprites()).toHaveLength(0);
+    expect(container.querySelectorAll('image.tile.arriving')).toHaveLength(0);
+  });
+
+  it('a newer take replaces the flight in the air', async () => {
+    const { container, rerender } = render(Table, { view: watching(7), send: vi.fn() });
+    const v8 = botTook(8);
+    await rerender({ view: v8, send: vi.fn() });
+    await vi.waitFor(() => expect(sprites()).toHaveLength(4));
+    const v9 = botTook(9, (v) => {
+      v.board!.players[0] = { ...fresh(), lines: [[1, 1], null, null, null, null] };
+      v.lastMove = { version: 9, seat: 0, kind: 'take', factory: 0, color: 1, row: 0, tiles: 1, columns: null };
+    });
+    await rerender({ view: v9, send: vi.fn() });
+    await vi.waitFor(() => expect(sprites()).toHaveLength(1));    // only the new take's tile
+    expect(container.querySelectorAll('.others-desktop image.tile.arriving')).toHaveLength(0);
+    expect(container.querySelectorAll('.mine image.tile.arriving')).toHaveLength(1);
+  });
+
+  it('a newer non-take version cancels the flight', async () => {
+    const { container, rerender } = render(Table, { view: watching(7), send: vi.fn() });
+    await rerender({ view: botTook(8), send: vi.fn() });
+    await vi.waitFor(() => expect(sprites()).toHaveLength(4));
+    const v9 = botTook(9, (v) => {
+      v.lastMove = { version: 9, seat: 1, kind: 'wall', factory: null, color: null, row: null, tiles: null, columns: [-1, -1, -1, -1, -1] };
+    });
+    await rerender({ view: v9, send: vi.fn() });
+    await tick();
+    expect(sprites()).toHaveLength(0);
+    expect(container.querySelectorAll('image.tile.arriving')).toHaveLength(0);
+  });
+
+  it('taking the first-player marker alone flies the marker to the floor', async () => {
+    const { container, rerender } = render(Table, { view: watching(7), send: vi.fn() });
+    const v8 = watching(8);
+    v8.board!.centerHasFirst = false;
+    v8.board!.players[1] = { ...fresh(), hasFirst: true };
+    v8.lastMove = { version: 8, seat: 1, kind: 'take', factory: 5, color: 5, row: 5, tiles: 0, columns: null };
+    await rerender({ view: v8, send: vi.fn() });
+    await vi.waitFor(() => expect(sprites()).toHaveLength(1));
+    expect((sprites()[0] as HTMLImageElement).src).toContain('tile_first.png');
+    expect(container.querySelectorAll('.others-desktop image.tile.floor.arriving')).toHaveLength(1);
   });
 });

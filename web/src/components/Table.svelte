@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { GameView, MoveBody } from '../lib/types';
   import Market from './Market.svelte';
+  import Flight from './Flight.svelte';
+  import type { FlightPlan } from '../lib/flight';
+  import { reducedMotion } from '../lib/motion';
+  import { floorDisplay } from '../lib/geometry';
   import PlayerBoard from './PlayerBoard.svelte';
   import StatusBar from './StatusBar.svelte';
   import WallChooser from './WallChooser.svelte';
@@ -10,8 +14,8 @@
   import { oneAtATime } from '../lib/submit';
   import { sounds } from '../lib/sound.svelte';
   import {
-    canPick, ghost, initial, legalRows, tapRow, tapSource, tapWallTarget, takeMove, wallColumns, wallComplete,
-    type Selection,
+    arrivals, canPick, ghost, initial, legalRows, tapRow, tapSource, tapWallTarget, takeMove, wallColumns, wallComplete,
+    type Arrivals, type Selection,
   } from '../lib/selection';
 
   interface Props { view: GameView; send: (body: MoveBody) => Promise<'ok' | 'invalid' | 'other'> }
@@ -22,14 +26,36 @@
   let shake = $state(false);
   let openSeat = $state<number | null>(null);
   let seenVersion = -1;
+  let shownBefore: GameView | null = null;  // the version rendered before this one
+  let flight = $state<FlightPlan | null>(null);
+  let arriving = $state<{ seat: number; a: Arrivals } | null>(null);
 
-  // A new version resets the selection.
+  // A new version resets the selection, and a take that follows the version on
+  // screen flies its tiles (a jump after a gap just shows the new state).
   $effect.pre(() => {
     if (view.version !== seenVersion) {
+      const before = shownBefore;
       seenVersion = view.version;
+      shownBefore = view;
       sel = initial(view);
+      flight = null;
+      arriving = null;
+      const m = view.lastMove;
+      if (before?.board && view.board && view.version === before.version + 1 && m?.version === view.version
+          && m.kind === 'take' && !reducedMotion()) {
+        const p = view.board.players[m.seat];
+        const a = arrivals(before.board.players[m.seat], p);
+        const shown = floorDisplay(p.floor, p.hasFirst).tiles;
+        arriving = { seat: m.seat, a };
+        flight = {
+          id: view.version, seat: m.seat, source: m.factory!, color: m.color!,
+          line: a.line ? { row: a.line.row, count: Math.min(a.line.to - a.line.from, 5) } : null,
+          floor: a.floor.map((i) => shown[i]),
+        };
+      }
     }
   });
+  const landing = (seat: number) => (arriving?.seat === seat ? arriving.a : null);
 
   const board = $derived(view.board!);
   const mySeat = $derived(view.you.seat);
@@ -82,7 +108,7 @@
 
   {#if mySeat !== null}
     <section class="mine panel" class:shake aria-label="your board">
-      <PlayerBoard player={board.players[mySeat]} name={seatName(view, mySeat)}
+      <PlayerBoard player={board.players[mySeat]} name={seatName(view, mySeat)} seat={mySeat} arriving={landing(mySeat)}
         interactive={!!legal}
         legalRows={legal && takeSel ? legalRows(legal, takeSel.source) : []}
         ghost={takeSel ? ghost(view, takeSel, mySeat) : null}
@@ -108,7 +134,7 @@
   <section class="others" aria-label="other players">
     <div class="others-desktop">
       {#each others as i}
-        <div class="panel opp"><PlayerBoard player={board.players[i]} name={seatName(view, i)} pulseRow={pulse(i)} /></div>
+        <div class="panel opp"><PlayerBoard player={board.players[i]} name={seatName(view, i)} seat={i} arriving={landing(i)} pulseRow={pulse(i)} /></div>
       {/each}
     </div>
     <div class="others-phone">
@@ -131,9 +157,15 @@
   {/if}
 </div>
 
+{#if flight}
+  {#key flight.id}
+    <Flight plan={flight} onLanded={() => { flight = null; arriving = null; }} />
+  {/key}
+{/if}
+
 {#if openSeat !== null}
   <Sheet title={`${seatName(view, openSeat)}'s board`} onClose={() => (openSeat = null)}>
-    <PlayerBoard player={board.players[openSeat]} name={seatName(view, openSeat)} />
+    <PlayerBoard player={board.players[openSeat]} name={seatName(view, openSeat)} seat={openSeat} />
   </Sheet>
 {/if}
 

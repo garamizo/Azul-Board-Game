@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PlayerView, WallRowView } from '../lib/types';
   import { FLOOR_BOX, floorCell, floorDisplay, lineBox, lineCell, tileAt, tileHref, wallBox, wallCell } from '../lib/geometry';
-  import { wallTargets, type WallSel } from '../lib/selection';
+  import { wallTargets, type Arrivals, type WallSel } from '../lib/selection';
 
   interface Props {
     player: PlayerView;
@@ -14,9 +14,11 @@
     pulseRow?: number | null;
     onRow?: (row: number) => void;
     onWallCell?: (row: number, col: number) => void;
+    seat?: number;
+    arriving?: Arrivals | null;
   }
   let { player, name, interactive = false, legalRows = [], ghost = null, wall = null, wallSel = null,
-        pulseRow = null, onRow, onWallCell }: Props = $props();
+        pulseRow = null, onRow, onWallCell, seat = undefined, arriving = null }: Props = $props();
 
   const rows = [0, 1, 2, 3, 4];
   const floor = $derived(floorDisplay(player.floor, player.hasFirst));
@@ -28,13 +30,21 @@
 <svg viewBox="0 0 900 600" class="board" role="group" aria-label={`${name}'s board`}>
   <image href="/assets/sprites/board2.png" width="900" height="600" />
   <text x="20" y="48" class="label">{name}: {player.score}</text>
+  {#if seat !== undefined}
+    {#each rows as row}
+      {@const box = lineBox(row)}
+      <rect class="dest" data-flight-dest={`${seat}:${row}`} x={box.x} y={box.y} width={box.w} height={box.h} />
+    {/each}
+    <rect class="dest" data-flight-dest={`${seat}:floor`} x={FLOOR_BOX.x} y={FLOOR_BOX.y} width={FLOOR_BOX.w} height={FLOOR_BOX.h} />
+  {/if}
 
   {#each rows as row}
     {@const line = player.lines[row]}
     {@const box = lineBox(row)}
     {#if line}
       {#each Array(line[1]) as _, i}
-        <image class="tile line" href={tileHref(line[0])} {...tileAt(lineCell(row, i))} />
+        <image class="tile line" class:arriving={arriving?.line?.row === row && i >= arriving.line.from}
+          href={tileHref(line[0])} {...tileAt(lineCell(row, i))} />
       {/each}
     {/if}
     {#if ghost && ghost.row === row}
@@ -71,7 +81,7 @@
   {/each}
 
   {#each floor.tiles as color, i}
-    <image class="tile floor" href={tileHref(color)} {...tileAt(floorCell(i))} />
+    <image class="tile floor" class:arriving={!!arriving?.floor.includes(i)} href={tileHref(color)} {...tileAt(floorCell(i))} />
   {/each}
   {#if floor.extra > 0}
     <text x="660" y="565" class="extra">+{floor.extra}</text>
@@ -92,6 +102,9 @@
   .label { font-family: var(--display); font-size: 40px; font-weight: 700; fill: #2b2118; paint-order: stroke; stroke: #f6efe4; stroke-width: 6px; }
   .extra, .ghost-count { font-size: 34px; font-weight: 700; fill: #a8321f; }
   .ghost { opacity: 0.5; }
+  .dest { fill: transparent; pointer-events: none; }
+  .tile.line, .tile.floor { transition: opacity 120ms ease-in; }
+  .tile.arriving { opacity: 0; }
   .hit { fill: transparent; stroke: transparent; stroke-width: 6; cursor: default; }
   .hit.legal, .hit.target { fill: color-mix(in srgb, var(--accent) 16%, transparent);
     stroke: color-mix(in srgb, var(--accent) 60%, transparent); stroke-width: 3; cursor: pointer;
