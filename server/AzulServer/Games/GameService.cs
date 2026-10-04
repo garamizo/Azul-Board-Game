@@ -5,6 +5,7 @@ using System.Text.Json;
 using Azul;
 using AzulServer.Api;
 using AzulServer.Data;
+using AzulServer.Hub;
 using Microsoft.Data.Sqlite;
 
 namespace AzulServer.Games;
@@ -35,7 +36,8 @@ public sealed class NoFaults : IFaultInjector
 }
 
 public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFaultInjector faults,
-    TimeProvider time, ILogger<GameService> log)
+    TimeProvider time, ILogger<GameService> log, AzulOptions options, BotIdentity bot, HubSignal hubSignal,
+    IHubReportBuilder reports)
 {
     abstract record Decision;
     sealed record Respond(ApiResult Result) : Decision;
@@ -151,6 +153,11 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
             Status = Status.Playing,
             StateJson = Json.Serialize(game.ToSnapshot()),
             Seats = g.Seats.Select(s => s.Kind == SeatKind.Open ? s with { Kind = SeatKind.Bot } : s).ToList(),
+            // Hub reporting (spec 3): only games started from here on are reported,
+            // under the bot key this process plays with.
+            StartedAt = Now(),
+            HubTracked = true,
+            BotKey = bot.Key,
         });
     });
 
@@ -181,6 +188,10 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
             var g = GameStore.Load(c, id);
             if (g is null) return ApiResult.Error(404, "not-found");
             if (g.Creator != viewer) return ApiResult.Error(403, "creator-only");
+            // A finished game's rows are the only inputs to its report until
+            // the report exists (spec 6.1).
+            if (g.Status == Status.Finished && g.HubTracked && !HubOutbox.Exists(c, null, id))
+                return ApiResult.Error(409, "hub-report-pending");
             using (var tx = c.BeginTransaction())
             {
                 GameStore.Delete(c, tx, id);
@@ -223,17 +234,25 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
                     return r.Result;
                 case Commit commit:
                     var next = commit.Next with { Version = g.Version + 1, UpdatedAt = Now() };
+                    bool finishing = next.Status == Status.Finished && g.Status != Status.Finished;
+                    if (finishing) next = next with { FinishedAt = next.UpdatedAt };
                     var move = commit.Move is null ? null : commit.Move with { Version = next.Version };
                     var last = move ?? GameStore.LastMove(c, id);
                     var view = Projection.Project(next, last, viewer);
                     if (move is not null) move = move with { ResultJson = Json.Serialize(view) };
+                    // Built before the transaction: a build failure is logged and the
+                    // move still commits; reconcile retries it (spec 6.1).
+                    string? report = finishing ? TryBuildReport(c, next, move) : null;
                     using (var tx = c.BeginTransaction())
                     {
                         GameStore.Update(c, tx, next, g.Version);
                         if (move is not null) GameStore.InsertMove(c, tx, move);
+                        // Same transaction: the finish and its report commit together or not at all.
+                        if (report is not null) HubOutbox.Queue(c, tx, id, report, next.UpdatedAt);
                         tx.Commit();
                     }
                     AfterCommit(id, next.Version);
+                    if (report is not null) hubSignal.Wake();
                     return ApiResult.Ok(view);
                 default:
                     throw new InvalidOperationException("unknown decision");
@@ -259,6 +278,22 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
             // Committed already: the sweep (Task 14) repairs a missed poke and
             // the SSE heartbeat (Task 13) a missed notification.
             log.LogError(e, "post-commit step failed for game {Game}", id);
+        }
+    }
+
+    string? TryBuildReport(SqliteConnection c, GameRecord next, MoveRecord? pending)
+    {
+        try
+        {
+            var built = reports.Build(next, HubReport.BotPlayedSeats(c, null, next.Id, pending), options.PublicOrigin);
+            if (built.Body is null && next.HubTracked)
+                log.LogError("no hub report for game {Game}: {Reason}", next.Id, built.Skip);
+            return built.Body;
+        }
+        catch (Exception e)
+        {
+            log.LogError(e, "hub report for game {Game} could not be built", next.Id);
+            return null;
         }
     }
 

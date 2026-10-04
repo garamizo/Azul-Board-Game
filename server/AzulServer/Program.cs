@@ -21,6 +21,8 @@ builder.Services.AddSingleton<Db>();
 builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<ServerMoveQueue>();
 builder.Services.AddSingleton<IFaultInjector, NoFaults>();
+builder.Services.AddSingleton<HubSignal>();
+builder.Services.AddSingleton<IHubReportBuilder, HubReportBuilder>();
 builder.Services.AddSingleton<GameService>();
 builder.Services.AddSingleton<IBotBrain, MctsBrain>();
 builder.Services.AddSingleton(sp => BotIdentity.For(sp.GetRequiredService<AzulOptions>()));

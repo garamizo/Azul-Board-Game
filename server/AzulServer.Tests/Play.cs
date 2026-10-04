@@ -51,6 +51,19 @@ public static class Play
         ? Take(v, takes[0])
         : Wall(v, v.Legal.Wall!.Select(r => r is null ? -1 : 5).ToArray());
 
+    /// Plays `c`'s turns with any legal move until the game is over (bots on).
+    public static async Task<GameView> ToEnd(HttpClient c, string id, int seconds = 120)
+    {
+        var until = DateTime.UtcNow.AddSeconds(seconds);
+        while (true)
+        {
+            var v = await WaitFor(c, id, x => x.Status == Status.Finished || x.Legal is not null, seconds);
+            if (v.Status == Status.Finished) return v;
+            if (DateTime.UtcNow > until) throw new TimeoutException($"game {id} did not finish");
+            await c.Post($"/api/games/{id}/moves", AnyLegal(v));  // 409 when a forced move landed first
+        }
+    }
+
     public static async Task<GameView> WaitFor(HttpClient c, string id, Func<GameView, bool> done, int seconds = 30)
     {
         var until = DateTime.UtcNow.AddSeconds(seconds);
