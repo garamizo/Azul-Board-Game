@@ -30,3 +30,30 @@ export function floorDisplay(floor: number[], hasFirst: boolean): { tiles: numbe
 export function factoryTiles(counts: number[]): number[] {
   return counts.flatMap((n, color) => Array<number>(n).fill(color));
 }
+
+/// Display colours for the mini boards and bubbles, matching the tile sprites;
+/// index 5 is the first-player marker.
+export const TILE_COLORS = ['#2f6fd0', '#e7c23a', '#c8382e', '#2b2b2b', '#e8e2d6', '#f6efe4'];
+
+/// The printed wall (board2.png): row r, column c holds colour (c − r) mod 5.
+export const wallColor = (row: number, col: number): number => (col - row + 5) % 5;
+
+const FLOOR_SCORE = [0, -1, -2, -4, -6, -8, -11, -14];
+/// Mirrors FloorToScore (AzulLibrary/Logic.cs); n counts the first-player marker.
+export const floorPenalty = (n: number): number => FLOOR_SCORE[Math.min(n, FLOOR_SCORE.length - 1)];
+
+export interface RingLayout { d: number; r: number; disc: number; centres: Point[] }
+
+/// Factories on a ring around the centre, in percent of a square box: the
+/// largest factory (capped at 24 %) whose neighbours stay 4 % apart as circles,
+/// factory 1 at 12 o'clock, then clockwise.
+export function ringLayout(n: number): RingLayout {
+  const s = Math.sin(Math.PI / n);
+  const d = Math.min(24, (98 * s - 4) / (1 + s));
+  const r = 50 - d / 2 - 1;
+  const centres = Array.from({ length: n }, (_, i) => {
+    const a = (2 * Math.PI * i) / n - Math.PI / 2;
+    return { x: 50 + r * Math.cos(a), y: 50 + r * Math.sin(a) };
+  });
+  return { d, r, disc: 2 * (r - d / 2) - 4, centres };
+}
