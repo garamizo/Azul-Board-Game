@@ -46,4 +46,25 @@ public class SkeletonTests
         Assert.Contains("<title>Azul</title>", await c.GetStringAsync("/"));
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/api/nope")).StatusCode);
     }
+
+    [Fact]
+    public async Task ShellIsNotCachedAndMissingAssetsAre404()
+    {
+        var root = Directory.CreateTempSubdirectory("azul-web-").FullName;
+        File.WriteAllText(Path.Combine(root, "index.html"), "<!doctype html><title>Azul</title>");
+        Directory.CreateDirectory(Path.Combine(root, "assets"));
+        File.WriteAllText(Path.Combine(root, "assets", "app.js"), "console.log(1)");
+        using var app = new TestApp(new AzulOptions { BotWorkers = 0, WebRoot = root });
+        var c = app.Client();
+        foreach (var path in new[] { "/", "/index.html", "/g/abc" })
+        {
+            var res = await c.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            Assert.Contains("<title>Azul</title>", await res.Content.ReadAsStringAsync());
+            Assert.True(res.Headers.CacheControl?.NoCache, $"{path} should be no-cache");
+        }
+        Assert.Equal("console.log(1)", await c.GetStringAsync("/assets/app.js"));
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/assets/nope.png")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync("/assets/sub/nope.js")).StatusCode);
+    }
 }

@@ -279,6 +279,12 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
             {
                 log.LogError(e, "game {Game} has an unreadable state", id);
             }
+            catch (Exception e)
+            {
+                // Any other bad row (e.g. a state that does not fit its seats)
+                // must not stop the sweep for every other game.
+                log.LogError(e, "game {Game} could not be checked for a server move", id);
+            }
         }
         return result;
     }

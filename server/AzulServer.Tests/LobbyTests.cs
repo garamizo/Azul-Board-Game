@@ -171,4 +171,27 @@ public sealed class LobbyTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, await S(alice.GetAsync($"/api/games/{good}")));
         Assert.DoesNotContain(bad, app.Service<GameService>().GamesNeedingServerMove());
     }
+
+    [Fact]
+    public async Task SweepSkipsAGameWhoseStateDoesNotFitItsSeats()
+    {
+        // Both games have a bot to move (alice handed seat 0 to a bot).
+        var good = await Play.Started(2, alice, bob);
+        var bad = await Play.Started(2, alice, bob);
+        foreach (var id in new[] { good, bad })
+            Assert.Equal(HttpStatusCode.OK, await S(alice.Post($"/api/games/{id}/seats/0/to-bot")));
+        // A valid 4-player snapshot with seat 3 to move, on a 2-seat game.
+        var s = new Azul.Game(4, new Random(1)).ToSnapshot() with { ActivePlayer = 3 };
+        using (var c = app.Service<Db>().Open())
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE games SET state_json = $s WHERE id = $id";
+            cmd.Parameters.AddWithValue("$s", Json.Serialize(s));
+            cmd.Parameters.AddWithValue("$id", bad);
+            cmd.ExecuteNonQuery();
+        }
+        var ids = app.Service<GameService>().GamesNeedingServerMove();
+        Assert.Contains(good, ids);
+        Assert.DoesNotContain(bad, ids);
+    }
 }

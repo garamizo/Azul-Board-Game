@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using AzulServer.Games;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace AzulServer.Tests;
 
@@ -179,5 +180,23 @@ public sealed class SseTests : IDisposable
         while (app.Service<EventHub>().SubscriberCount(id) > 0 && DateTime.UtcNow < until)
             await Task.Delay(50);
         Assert.Equal(0, app.Service<EventHub>().SubscriberCount(id));
+    }
+
+    [Fact]
+    public async Task StreamsEndWhenTheServerStops()
+    {
+        // A long heartbeat, so only shutdown can end the stream within the test.
+        using var slow = new TestApp(new AzulOptions { BotWorkers = 0, SseHeartbeatSeconds = 60 });
+        var alice = slow.Client("alice@x.com");
+        var id = await Play.Started(2, alice, slow.Client("bob@x.com"));
+        using var s = await Open(alice, id);
+        await s.Next();
+        var hub = slow.Service<EventHub>();  // the host disposes its services once stopped
+        slow.Service<IHostApplicationLifetime>().StopApplication();
+        Assert.True(await s.Ended());
+        var until = DateTime.UtcNow.AddSeconds(5);
+        while (hub.SubscriberCount(id) > 0 && DateTime.UtcNow < until)
+            await Task.Delay(50);
+        Assert.Equal(0, hub.SubscriberCount(id));
     }
 }

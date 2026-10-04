@@ -5,9 +5,14 @@ namespace AzulServer.Api;
 
 public static class EventStream
 {
-    public static async Task Handle(HttpContext ctx, string id, GameService games, EventHub hub, AzulOptions options, TimeProvider time)
+    public static async Task Handle(HttpContext ctx, string id, GameService games, EventHub hub, AzulOptions options, TimeProvider time,
+        IHostApplicationLifetime lifetime)
     {
         var viewer = ctx.Email();
+        // Ends when the client leaves or the server shuts down (a redeploy
+        // would otherwise wait for its shutdown timeout on every open stream).
+        using var stream = CancellationTokenSource.CreateLinkedTokenSource(ctx.RequestAborted, lifetime.ApplicationStopping);
+        var ct = stream.Token;
         // Subscribe before reading the first snapshot, so no version can slip
         // between the two; the client ignores versions it already has.
         var (subscription, reader) = hub.Subscribe(id);
@@ -25,7 +30,6 @@ public static class EventStream
             long sent = first.Version;
             await WriteState(ctx, first);
 
-            var ct = ctx.RequestAborted;
             var until = time.GetUtcNow() + TimeSpan.FromMinutes(options.SseMaxMinutes);
             var heartbeat = TimeSpan.FromSeconds(options.SseHeartbeatSeconds);
             while (!ct.IsCancellationRequested && time.GetUtcNow() < until)
@@ -84,9 +88,9 @@ public static class EventStream
                 }
             }
         }
-        catch (OperationCanceledException) when (ctx.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // client went away
+            // client went away, or the server is stopping
         }
         finally
         {

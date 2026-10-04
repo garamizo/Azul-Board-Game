@@ -48,7 +48,16 @@ PhysicalFileProvider? files = options.WebRoot is { } webRoot && Directory.Exists
 if (files is not null)
 {
     app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
-    app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = files,
+        // The shell names the hashed bundles of the current build: revalidate it every time.
+        OnPrepareResponse = ctx =>
+        {
+            if (ctx.File.Name == "index.html")
+                ctx.Context.Response.Headers.CacheControl = "no-cache";
+        },
+    });
 }
 // Explicit, and after the static files: StaticFileMiddleware does nothing for
 // a request that routing already matched to an endpoint (the fallback below
@@ -59,15 +68,17 @@ ApiEndpoints.Map(app);
 
 if (files is not null)
 {
-    // Client-side routes (/g/<id>) get the SPA shell; unknown /api paths stay 404.
+    // Client-side routes (/g/<id>) get the SPA shell; unknown /api paths and
+    // missing static assets (an old bundle after a redeploy) stay 404.
     app.MapFallback(async ctx =>
     {
-        if (ctx.Request.Path.StartsWithSegments("/api"))
+        if (ctx.Request.Path.StartsWithSegments("/api") || ctx.Request.Path.StartsWithSegments("/assets"))
         {
             ctx.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
         ctx.Response.ContentType = "text/html; charset=utf-8";
+        ctx.Response.Headers.CacheControl = "no-cache";
         await ctx.Response.SendFileAsync(files.GetFileInfo("index.html"));
     });
 }
