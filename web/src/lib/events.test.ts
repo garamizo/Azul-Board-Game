@@ -19,7 +19,7 @@ describe('subscribe', () => {
   it('delivers states and reconnects after an error', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('EventSource', FakeSource);
-    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x' });
+    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x', hubUrl: null });
     vi.spyOn(api, 'game').mockResolvedValue({} as never);
     const states: number[] = [];
     const statuses: string[] = [];
@@ -41,7 +41,7 @@ describe('subscribe', () => {
   it('a deleted game stops reconnecting', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('EventSource', FakeSource);
-    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x' });
+    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x', hubUrl: null });
     vi.spyOn(api, 'game').mockRejectedValue(new ApiError(404, { error: 'not-found' }));
     const deleted = vi.fn();
     subscribe('abc', { state: () => {}, deleted, status: () => {} });
@@ -68,7 +68,7 @@ describe('subscribe', () => {
   it('unsubscribing while the game probe is pending: a late 404 does not report deleted', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('EventSource', FakeSource);
-    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x' });
+    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x', hubUrl: null });
     let reject!: (e: unknown) => void;
     vi.spyOn(api, 'game').mockReturnValue(new Promise((_, r) => { reject = r; }));
     const deleted = vi.fn();

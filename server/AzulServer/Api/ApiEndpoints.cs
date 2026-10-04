@@ -14,7 +14,7 @@ public static class ApiEndpoints
         app.MapGet("/api/health", () => Results.Json(new { ok = true }));
 
         var api = app.MapGroup("/api");
-        api.MapGet("/me", (HttpContext c) => Results.Json(new { email = c.Email() }));
+        api.MapGet("/me", (HttpContext c, AzulOptions o) => Results.Json(new { email = c.Email(), hubUrl = o.Hub.PublicUrl }));
         api.MapGet("/games/{id}/events", EventStream.Handle);
         api.MapGet("/games", (GameService s) => Results.Json(s.List(), Json.Options));
         api.MapPost("/games", (HttpContext c, GameService s, CreateGameRequest r) => s.Create(c.Email(), r.Players).ToHttp());

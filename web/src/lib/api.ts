@@ -36,7 +36,7 @@ export function message(e: unknown): string {
 }
 
 export const api = {
-  me: () => request<{ email: string }>('GET', '/api/me'),
+  me: () => request<{ email: string; hubUrl: string | null }>('GET', '/api/me'),
   games: () => request<GameSummary[]>('GET', '/api/games'),
   create: (players: number) => request<GameView>('POST', '/api/games', { players }),
   game: (id: string) => request<GameView>('GET', `/api/games/${id}`),

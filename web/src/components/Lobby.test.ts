@@ -13,7 +13,7 @@ describe('Lobby', () => {
       seats: [{ idx: 0, kind: 'open', email: null }, { idx: 1, kind: 'human', email: 'bob@x' }],
     };
     vi.spyOn(api, 'games').mockResolvedValue([game]);
-    vi.spyOn(api, 'me').mockResolvedValue({ email: 'me@x' });
+    vi.spyOn(api, 'me').mockResolvedValue({ email: 'me@x', hubUrl: null });
     const { findByRole, queryByRole } = render(Lobby);
     const heading = await findByRole('heading', { name: 'Your games' });
     within(heading.closest('section')!).getByRole('link');

@@ -197,4 +197,14 @@ public class HubFlowTests
         var g = await Play.Create(alice, 2);
         Assert.Equal(HttpStatusCode.NoContent, (await alice.DeleteAsync($"/api/games/{g.Id}")).StatusCode);
     }
+
+    [Fact]
+    public async Task MeNamesTheHubWhenConfigured()
+    {
+        using var on = new TestApp(new AzulOptions { BotWorkers = 0, Hub = new HubOptions { PublicUrl = "https://play.example" } });
+        var me = JsonNode.Parse(await on.Client().GetStringAsync("/api/me"))!;
+        Assert.Equal(("alice@example.com", "https://play.example"), ((string?)me["email"], (string?)me["hubUrl"]));
+        using var off = new TestApp();
+        Assert.Null(JsonNode.Parse(await off.Client().GetStringAsync("/api/me"))!["hubUrl"]);
+    }
 }
