@@ -1,0 +1,25 @@
+{
+  "name": "azul-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "assets": "node scripts/copy-assets.mjs",
+    "dev": "npm run assets && vite",
+    "build": "npm run assets && vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@testing-library/svelte": "5.4.2",
+    "@tsconfig/svelte": "5.0.8",
+    "jsdom": "30.1.1",
+    "svelte": "5.57.1",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
+  }
+}

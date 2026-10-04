@@ -17,3 +17,4 @@ web/test-results/
 web/playwright-report/
 web/.e2e-data/
 .env.serve
+web/public/assets/

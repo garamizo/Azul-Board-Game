@@ -10,7 +10,7 @@ DOTNET := docker run --rm -i --user $(UID):$(GID) \
 	-e DOTNET_NOLOGO=1 -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
 	-v $(CURDIR):/src -v $(NUGET_DIR):/nuget -w /src $(SDK_IMAGE) dotnet
 
-.PHONY: dotnet build test desktop-smoke dev-server
+.PHONY: dotnet build test desktop-smoke dev-server web-test
 
 $(NUGET_DIR):
 	mkdir -p $@
@@ -40,3 +40,6 @@ dev-server: | $(NUGET_DIR)
 		-e AZUL_WEB_ROOT=/src/web/dist -e AZUL_BOT_THINK_SECONDS=$${AZUL_BOT_THINK_SECONDS:-1} \
 		-v $(CURDIR):/src -v $(NUGET_DIR):/nuget -w /src $(SDK_IMAGE) \
 		dotnet run --project server/AzulServer --no-launch-profile
+
+web-test:
+	cd web && npm run check && npm test
