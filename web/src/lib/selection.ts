@@ -1,4 +1,5 @@
-import type { GameView, LegalView, WallRowView } from './types';
+import type { GameView, LegalView, PlayerView, WallRowView } from './types';
+import { FLOOR_SLOTS } from './geometry';
 
 export const FLOOR = 5;
 export const FIRST = 5;
@@ -90,4 +91,27 @@ export function ghost(view: GameView, sel: TakeSel, seat: number):
   const have = line && line[0] === color ? line[1] : 0;
   const placed = Math.min(count, sel.row + 1 - have);
   return { row: sel.row, color, placed, overflow: count - placed + marker };
+}
+
+export interface Arrivals { line: { row: number; from: number; to: number } | null; floor: number[] }
+
+/// What one take added to a board: the pattern line's new tiles (counts `from`
+/// up to `to`) and the new floor slots, as indices into the floor as displayed
+/// (marker first, then colour order, 7 slots). The server rebuilds the floor in
+/// colour order, so new tiles are found by colour count, not by position.
+export function arrivals(prev: PlayerView, next: PlayerView): Arrivals {
+  let line: Arrivals['line'] = null;
+  for (let row = 0; row < 5 && !line; row++) {
+    const from = prev.lines[row]?.[1] ?? 0, to = next.lines[row]?.[1] ?? 0;
+    if (to > from) line = { row, from, to };
+  }
+  const shown = next.hasFirst ? [FIRST, ...next.floor] : [...next.floor];
+  const floor: number[] = [];
+  if (next.hasFirst && !prev.hasFirst) floor.push(0);
+  for (let c = 0; c < 5; c++) {
+    const added = next.floor.filter((t) => t === c).length - prev.floor.filter((t) => t === c).length;
+    const end = shown.lastIndexOf(c);
+    for (let i = end - added + 1; added > 0 && i <= end; i++) if (i < FLOOR_SLOTS) floor.push(i);
+  }
+  return { line, floor: floor.sort((a, b) => a - b) };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { GameView, LegalView, WallRowView } from './types';
+import type { GameView, LegalView, PlayerView, WallRowView } from './types';
 import {
-  FLOOR, ghost, initial, tapRow, tapSource, tapWallTarget, takeMove, wallColumns, wallComplete, wallTargets,
+  arrivals, FLOOR, ghost, initial, tapRow, tapSource, tapWallTarget, takeMove, wallColumns, wallComplete, wallTargets,
   type TakeSel, type WallSel,
 } from './selection';
 
@@ -102,5 +102,32 @@ describe('wall phase', () => {
 describe('not my turn', () => {
   it('has no selection', () => {
     expect(initial(view(null))).toBeNull();
+  });
+});
+
+describe('arrivals', () => {
+  const p = (lines: PlayerView['lines'], floor: number[], hasFirst = false): PlayerView =>
+    ({ score: 0, lines, wall: Array(5).fill([-1, -1, -1, -1, -1]), floor, hasFirst });
+  const none: PlayerView['lines'] = [null, null, null, null, null];
+
+  it('fills an empty line', () => {
+    expect(arrivals(p(none, []), p([null, null, [1, 2], null, null], []))).toEqual({ line: { row: 2, from: 0, to: 2 }, floor: [] });
+  });
+
+  it('splits between a partial line and the floor', () => {
+    expect(arrivals(p([null, [0, 1], null, null, null], []), p([null, [0, 2], null, null, null], [0, 0])))
+      .toEqual({ line: { row: 1, from: 1, to: 2 }, floor: [0, 1] });
+  });
+
+  it('counts by colour: blue arriving before an existing white', () => {
+    expect(arrivals(p(none, [4]), p(none, [0, 4]))).toEqual({ line: null, floor: [0] });
+  });
+
+  it('the marker arrives first in the display', () => {
+    expect(arrivals(p(none, [3]), p(none, [2, 3], true))).toEqual({ line: null, floor: [0, 1] });
+  });
+
+  it('only the first 7 floor slots', () => {
+    expect(arrivals(p(none, [0, 0, 0, 0, 0, 0]), p(none, [0, 0, 0, 0, 0, 0, 0, 0, 0]))).toEqual({ line: null, floor: [6] });
   });
 });
