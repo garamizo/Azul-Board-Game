@@ -4,7 +4,7 @@ pythonnet.load("coreclr")  # to use dotnet rather than mono
 if True:
     import clr
     import sys
-    sys.path.append(r"AzulLibrary/bin/Release/net7.0")
+    sys.path.append(r"AzulLibrary/bin/Release/net10.0")
     clr.AddReference('AzulLibrary')  # add .dll file
     # from Azul import Game, Move
     from Azul import Game, Move
