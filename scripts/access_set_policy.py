@@ -23,6 +23,7 @@ import urllib.request
 from pathlib import Path
 
 API = "https://api.cloudflare.com/client/v4"
+PER_PAGE = 50
 TOKEN_FILE = Path.home() / ".config" / "cloudflare" / "api-token"
 # Server-managed fields not sent back on update (checked against
 # github.com/cloudflare/api-schemas, see Plan 4 Task 24 Step 3).
@@ -37,7 +38,7 @@ class Api:
     def __init__(self, token):
         self.token = token
 
-    def _send(self, method, path, body=None, query=None):
+    def _call(self, method, path, body=None, query=None):
         url = API + path + ("?" + urllib.parse.urlencode(query) if query else "")
         req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), method=method)
         req.add_header("Authorization", f"Bearer {self.token}")
@@ -49,13 +50,24 @@ class Api:
             payload = json.load(e)
         if not payload.get("success"):
             raise Refused(f"{method} {path}: {payload.get('errors')}")
-        return payload["result"]
+        return payload
 
     def get(self, path, **query):
-        return self._send("GET", path, query=query or None)
+        return self._call("GET", path, query=query or None)["result"]
+
+    def list(self, path, **query):
+        """Every page of a list endpoint (result_info.total_pages)."""
+        items, page = [], 1
+        while True:
+            payload = self._call("GET", path, query={**query, "page": page, "per_page": PER_PAGE})
+            items.extend(payload.get("result") or [])
+            info = payload.get("result_info") or {}
+            if page >= int(info.get("total_pages") or 1):
+                return items
+            page += 1
 
     def put(self, path, body):
-        return self._send("PUT", path, body)
+        return self._call("PUT", path, body)["result"]
 
 
 def load_token():
@@ -76,20 +88,33 @@ def account(api):
 
 
 def find_app(api, acct, hostname):
-    apps = [a for a in api.get(f"/accounts/{acct}/access/apps")
+    apps = [a for a in api.list(f"/accounts/{acct}/access/apps")
             if a.get("type") == "self_hosted" and a.get("domain") == hostname]
     if len(apps) != 1:
         raise Refused(f"expected one self-hosted application for {hostname}, found {len(apps)}")
     return api.get(f"/accounts/{acct}/access/apps/{apps[0]['id']}")
 
 
-def find_policy(api, acct, name):
-    policies = [p for p in api.get(f"/accounts/{acct}/access/policies") if p.get("name") == name]
+def find_policy(api, acct, name, all_policies):
+    policies = [p for p in all_policies if p.get("name") == name]
     if len(policies) != 1:
         raise Refused(f"expected one reusable policy named {name!r}, found {len(policies)}")
     if policies[0].get("decision") != "allow":
         raise Refused(f"policy {name!r} is {policies[0].get('decision')!r}, not allow")
     return policies[0]
+
+
+def check_removable(app, all_policies):
+    """Cloudflare deletes a legacy (app-scoped) policy once it leaves its application,
+    so the rollback could not bring it back; only reusable policies may be swapped out."""
+    by_id = {p["id"]: p for p in all_policies}
+    for pid in policy_ids(app):
+        pol = by_id.get(pid)
+        if pol is None or pol.get("reusable") is False:
+            name = (pol or {}).get("name") or next((p.get("name") for p in app.get("policies") or [] if p.get("id") == pid), pid)
+            raise Refused(f"policy {name!r} ({pid}) on {app.get('domain')} is not reusable, so removing it would delete it "
+                          f"and the rollback could not restore it; make it reusable first "
+                          f"(PUT /accounts/<acct>/access/policies/{pid}/make_reusable) or switch by hand")
 
 
 def write_backup(path, app):
@@ -128,7 +153,9 @@ def policy_ids(app):
 def set_policy(api, hostname, policy_name, backup, dry_run, log=print):
     acct = account(api)
     app = find_app(api, acct, hostname)
-    policy = find_policy(api, acct, policy_name)
+    all_policies = api.list(f"/accounts/{acct}/access/policies")
+    policy = find_policy(api, acct, policy_name, all_policies)
+    check_removable(app, all_policies)
     if policy_ids(app) == [policy["id"]]:
         log(f"{hostname} already uses only {policy_name!r}; nothing to do")
         return app
