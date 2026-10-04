@@ -16,6 +16,7 @@ internal static class GameAssert
         Assert.Equal(expected.isRegularPhase, actual.isRegularPhase);
         Assert.Equal(expected.newRoundPlayer, actual.newRoundPlayer);
         Assert.Equal(expected.countPlayerClearedRound, actual.countPlayerClearedRound);
+        Assert.Equal(expected.IsFinished, actual.IsFinished);
         Assert.Equal(expected.numFactories, actual.numFactories);
         Assert.Equal(expected.CENTER, actual.CENTER);
         Assert.Equal(expected.factories.Length, actual.factories.Length);

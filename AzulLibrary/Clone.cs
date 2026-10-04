@@ -33,6 +33,7 @@ namespace Azul
                 isRegularPhase = isRegularPhase,
                 newRoundPlayer = newRoundPlayer,
                 countPlayerClearedRound = countPlayerClearedRound,
+                IsFinished = IsFinished,
                 factories = factories.Select(f => (int[])f.Clone()).ToArray(),
                 bag = (int[])bag.Clone(),
                 discarded = (int[])discarded.Clone(),

@@ -30,6 +30,9 @@
         public bool isRegularPhase = true;
         public int newRoundPlayer = 0;
         public int countPlayerClearedRound = 0;
+        /// Set by the Play call that scores the end of the game; Play refuses
+        /// to run afterwards, so end bonuses (Player.UpdateGame) apply once.
+        public bool IsFinished { get; private set; }
 
         // public Game DeepCopy() 
         // {
@@ -1145,6 +1148,8 @@
 
         public override bool Play(Move m)
         {
+            if (IsFinished)
+                throw new InvalidOperationException("game is finished");
             step++;
             chanceHash = 0;
 
@@ -1197,6 +1202,7 @@
                     {
                         for (int i = 0; i < numPlayers; i++)
                             players[i].UpdateGame();
+                        IsFinished = true;
                         return false;
                     }
                     activePlayer = newRoundPlayer;
@@ -1260,11 +1266,23 @@
 
         public bool IsValid(int[] colIdx, int[] colors)
         {
+            if (colIdx.Length != Constants.numRows || colors.Length != Constants.numRows)
+                return false;
             var p = players[activePlayer];
             for (int row = 0; row < Constants.numRows; row++)
             {
+                // -1: no completed line, 0..4: wall column, 5: floor. Nothing else.
+                if (colIdx[row] < -1 || colIdx[row] > Constants.numCols)
+                    return false;
                 int color = colors[row];
-                if (color == -1) continue;  // empty row
+                if (color < -1 || color >= Constants.numColors)
+                    return false;
+                if (color == -1)
+                {
+                    if (colIdx[row] != -1)
+                        return false;  // no line colour, but a target set
+                    continue;
+                }
                 int numTiles = p.line[row, color];
 
                 if (numTiles < row + 1)  // incomplete line
@@ -1273,9 +1291,9 @@
                         return false;  // line incomplete, but idx set
                     continue;  // check next row
                 }
-                if (colIdx[row] >= Constants.numCols) continue; // floor
+                if (colIdx[row] == Constants.numCols) continue; // floor
                 // line complete, but idx set out of bounds
-                if (numTiles == row + 1 && colIdx[row] < 0)
+                if (colIdx[row] < 0)
                     return false;
                 // grid already filled
                 if (p.grid[row, colIdx[row]] != EMPTY_TILE)
@@ -1284,7 +1302,6 @@
                 for (int i = 0; i < Constants.numCols; i++)
                     if (p.grid[row, i] == color || p.grid[i, colIdx[row]] == color)
                         return false;
-                // grid[row, colIdx[row]] = color;
                 // previous line already filled this column
                 for (int i = row - 1; i >= 0; i--)
                     if (colIdx[i] == colIdx[row] && colors[i] == colors[row])
@@ -1295,6 +1312,12 @@
 
         public bool IsValid(int factoryIdx, int color, int row)
         {
+            if (factoryIdx < 0 || factoryIdx > numFactories)
+                return false;
+            if (color < 0 || color > (int)Tiles.FIRST_MOVE)
+                return false;
+            if (row < 0 || row > (int)Rows.FLOOR)
+                return false;
             ref var factory = ref factories[factoryIdx];
             ref var player = ref players[activePlayer];
             // int color = T.color;
@@ -1326,10 +1349,14 @@
         }
         public override bool IsValid(Move action) //=> IsValid(action.factoryIdx, action.color, action.row);
         {
-            if (action.colIdx[0] == Move.NOT_SET)
-                return IsValid(action.factoryIdx, action.color, action.row);
-            else
-                return IsValid(action.colIdx, action.colors);
+            if (IsFinished || action.playerIdx != activePlayer)
+                return false;
+            bool isTake = action.colIdx[0] == Move.NOT_SET;
+            if (isTake != isRegularPhase)
+                return false;  // the phase comes from the game, not the move
+            return isTake
+                ? IsValid(action.factoryIdx, action.color, action.row)
+                : IsValid(action.colIdx, action.colors);
         }
 
         static int FactoriesVsPlayer(int numPlayers)
