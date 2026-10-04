@@ -5,7 +5,6 @@
     using GameMath = GameUtils.GameMath;
     using System;
     using System.Linq;  // Sum, Max, Min
-    using DeepCopy;
     using System.Drawing;
 
     public partial class Game : GameUtils.Game<Move>

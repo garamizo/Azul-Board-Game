@@ -7,7 +7,6 @@ using CsvHelper;
 using System.Globalization;
 using System.Diagnostics;
 using GameMath = GameUtils.GameMath;
-using DeepCopy;
 
 
 
@@ -481,7 +480,7 @@ class Tests
                     Move a = g.GetRandomMove();
                     Debug.Assert(g.IsValid(a));
                     // Console.WriteLine(a);
-                    gOld = DeepCopier.Copy(g);
+                    gOld = g.Clone();
                     if (g.Play(a))  // if round is over
                         Console.WriteLine(".");
                     // break;

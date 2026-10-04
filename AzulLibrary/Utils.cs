@@ -242,6 +242,9 @@ public abstract class Game<M>
 
     public Random RandomSeed { get => rng; }
     public abstract Game<M> Reset(int numPlayers);
+
+    /// Deep copy with no side effects on this game (no dealing, no draws from rng).
+    public abstract Game<M> Clone();
     // public bool paranoid;
     public abstract bool IsGameOver();
     // public abstract bool IsTerminal();

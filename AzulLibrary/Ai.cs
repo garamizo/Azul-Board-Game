@@ -2,7 +2,6 @@ namespace Ai
 {
     using System.Diagnostics;  // Debug.Assert, Stopwatch
     using System.Collections.Generic;
-    using DeepCopy;  // DeepCopier (dotnet add package DeepCopy)
     using GameMath = GameUtils.GameMath;
     using RewardMap = GameUtils.RewardMap;
     using System;
@@ -34,7 +33,7 @@ namespace Ai
                 var valBest = -1f;
                 for (int i = 0; i < actions.Count; i++)
                 {
-                    var stateNext = DeepCopier.Copy(state);
+                    var stateNext = (TGame)state.Clone();
                     stateNext.Play(actions[i]);
                     float score = -GetGameValue(stateNext, d - 1, -1f, -valBest);
 
@@ -86,7 +85,7 @@ namespace Ai
 
             foreach (var action in state.GetPossibleActions())
             {
-                var stateNext = DeepCopier.Copy(state);
+                var stateNext = (TGame)state.Clone();
                 stateNext.Play(action);
 
                 float val;
@@ -147,7 +146,7 @@ namespace Ai
 
         static float[] GetGameMoveValue(TGame state, TMove act, int depth)
         {
-            var stateNext = DeepCopier.Copy(state);
+            var stateNext = (TGame)state.Clone();
             stateNext.Play(act);
             bool isGameOver = stateNext.IsGameOver();
             if (depth < 0 || isGameOver || stopWatch.Elapsed.TotalSeconds > _timeout)
@@ -214,7 +213,7 @@ namespace Ai
         // Construct root
         public MCTS_Stochastic(TGame state, float eGreedy)
         {
-            this.state = DeepCopier.Copy(state);
+            this.state = (TGame)state.Clone();
             this.state.chanceHash = 0;
             this.parent = null;
             this.eGreedy = eGreedy;
@@ -230,7 +229,7 @@ namespace Ai
         // construct child
         public MCTS_Stochastic(MCTS_Stochastic<TGame, TMove> parent, int actionIdx)
         {
-            this.state = DeepCopier.Copy(parent.state);
+            this.state = (TGame)parent.state.Clone();
             this.actionIdx = actionIdx;
             this.parent = parent;
             // this.rewardMap = parent.rewardMap;
@@ -286,7 +285,7 @@ namespace Ai
 
         public float[] Rollout()
         {
-            var stateNext = DeepCopier.Copy(state);
+            var stateNext = (TGame)state.Clone();
             while (stateNext.IsGameOver() == false)
             {
                 var action = stateNext.GetEGreedyMove(eGreedy);
@@ -577,7 +576,7 @@ namespace Ai
         // Construct root
         public MCTS(TGame state, float eGreedy)
         {
-            this.state = DeepCopier.Copy(state);
+            this.state = (TGame)state.Clone();
             this.parent = null;
             this.eGreedy = eGreedy;
             rootPlayer = state.activePlayer;
@@ -593,7 +592,7 @@ namespace Ai
         // construct child
         public MCTS(MCTS<TGame, TMove> parent, int actionIdx)
         {
-            this.state = DeepCopier.Copy(parent.state);
+            this.state = (TGame)parent.state.Clone();
             this.actionIdx = actionIdx;
             this.parent = parent;
             this.eGreedy = parent.eGreedy;
@@ -628,7 +627,7 @@ namespace Ai
 
         public float[] Rollout()
         {
-            var stateNext = DeepCopier.Copy(state);
+            var stateNext = (TGame)state.Clone();
             while (stateNext.IsGameOver() == false)
             {
                 TMove action;

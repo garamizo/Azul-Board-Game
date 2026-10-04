@@ -1,5 +1,4 @@
 namespace TicTacToe;
-using DeepCopy;
 using System.Data.Common;
 using System.Diagnostics;
 
@@ -43,6 +42,13 @@ public class Game : GameUtils.Game<Move>
     }
     public Game() : this(2)
     { }
+
+    public override Game Clone()
+    {
+        var g = new Game(numPlayers) { activePlayer = activePlayer, step = step, chanceHash = chanceHash };
+        g.grid = (int[,])grid.Clone();
+        return g;
+    }
 
 
     public override Game Reset(int numPlayers) => new(numPlayers);
@@ -188,7 +194,7 @@ public class Game : GameUtils.Game<Move>
         float scoreBest = float.MinValue;
         for (int i = 0; i < actions.Count; i++)
         {
-            Game g = DeepCopier.Copy(this);
+            Game g = Clone();
             g.Play(actions[i]);
             var score = (g.IsGameOver() ? g.GetRewards() : g.GetHeuristics())[activePlayer];
             if (score > scoreBest)
