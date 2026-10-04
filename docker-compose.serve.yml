@@ -1,0 +1,39 @@
+# Production: https://azul.signalwave.dev through a Cloudflare Tunnel with
+# Cloudflare Access in front (docs/deploy.md). The app also checks Access's
+# JWT itself on every path but /api/health, so the loopback port below is for
+# probes only. cloudflared reaches the app as http://app:8080; never run a
+# connector on the host for this tunnel (two connectors split traffic).
+name: azul-serve
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      AZUL_ACCESS_TEAM_DOMAIN: ${AZUL_ACCESS_TEAM_DOMAIN:?set in .env.serve (docs/deploy.md)}
+      AZUL_ACCESS_AUD: ${AZUL_ACCESS_AUD:?set in .env.serve (docs/deploy.md)}
+      AZUL_PUBLIC_ORIGIN: ${AZUL_PUBLIC_ORIGIN:-https://azul.signalwave.dev}
+      AZUL_BOT_WORKERS: ${AZUL_BOT_WORKERS:-2}
+      AZUL_BOT_THINK_SECONDS: ${AZUL_BOT_THINK_SECONDS:-3}
+    ports: ["127.0.0.1:${AZUL_SERVE_PORT:-29648}:8080"]
+    volumes: ["azul-data:/data"]
+    healthcheck:
+      test: ["CMD", "/app/AzulServer", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    logging: *logging
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set in .env.serve (docs/deploy.md)}
+    depends_on:
+      app: { condition: service_healthy }
+    logging: *logging
+volumes:
+  azul-data: {}

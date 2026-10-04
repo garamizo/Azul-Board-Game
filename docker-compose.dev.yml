@@ -1,0 +1,19 @@
+# Dev mode (no Access; identity from X-Dev-User) on 127.0.0.1:29649, for the
+# load, crash and backup tests. Never publish this stack.
+name: azul-dev
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      AZUL_BOT_WORKERS: ${AZUL_BOT_WORKERS:-2}
+      AZUL_BOT_THINK_SECONDS: ${AZUL_BOT_THINK_SECONDS:-3}
+    ports: ["127.0.0.1:${AZUL_DEV_PORT:-29649}:8080"]
+    volumes: ["azul-dev-data:/data"]
+    healthcheck:
+      test: ["CMD", "/app/AzulServer", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+volumes:
+  azul-dev-data: {}
