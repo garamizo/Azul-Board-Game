@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Azul;
+using AzulServer.Api;
 using AzulServer.Data;
 using Microsoft.Data.Sqlite;
 
@@ -296,4 +297,114 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
             return new ServerTurn(id, g.Version, game, "auto", forced);
         return null;
     }
+
+    // ---------- moves ----------
+
+    public Task<ApiResult> Move(string id, string viewer, MoveRequest req)
+    {
+        if (MoveShape(req) is { } bad)
+            return Task.FromResult(bad);
+        var hash = RequestHash(req);
+        return Mutate(id, viewer, (g, c) =>
+        {
+            // 1. A request already applied answers with its stored result,
+            //    whatever happened to the game since.
+            if (GameStore.FindMove(c, id, req.RequestId!) is { } prior)
+                return prior.Actor == viewer && prior.RequestHash == hash && prior.ResultJson is not null
+                    ? new Respond(ApiResult.Ok(JsonDocument.Parse(prior.ResultJson).RootElement.Clone()))
+                    : Reject(409, "request-id-reused");
+            // 2-3. Playing, and at the version the client saw. Version before
+            //      ownership: a double submit from two devices is stale, not 403.
+            if (g.Status != Status.Playing) return Reject(409, "not-playing");
+            if (req.Version != g.Version)
+                return new Respond(ApiResult.Error(409, "stale", Projection.Project(g, GameStore.LastMove(c, id), viewer)));
+            var game = Game.FromSnapshot(Projection.Snapshot(g));
+            var seat = g.Seats[game.activePlayer];
+            // 4. Only the person in the active human seat.
+            if (seat.Kind != SeatKind.Human || seat.Email != viewer) return Reject(403, "not-your-turn");
+            // 5. The phase comes from the game.
+            bool isTake = req.Kind == "take";
+            if (isTake != game.isRegularPhase) return Reject(400, "wrong-phase");
+            Move move;
+            if (isTake)
+            {
+                int f = req.Factory!.Value, color = req.Color!.Value, row = req.Row!.Value;
+                if (f > game.numFactories) return Reject(400, "bad-factory");
+                if (color == 5 && (f != game.numFactories || row != 5)) return Reject(400, "bad-first-take");
+                // The correcting constructor fills count, FIRST flag and player
+                // from the game; nothing of that comes from the client.
+                move = new Move(new Move { factoryIdx = f, color = color, row = row }, game);
+            }
+            else
+            {
+                move = new Move(new Move { colIdx = (int[])req.Columns!.Clone() }, game);
+            }
+            // 6. The engine's rules.
+            if (!game.IsValid(move)) return Reject(400, "illegal");
+            return Apply(g, game, move, seat.Idx, viewer, req.RequestId, hash);
+        });
+    }
+
+    static ApiResult? MoveShape(MoveRequest r)
+    {
+        static ApiResult Bad(string code) => ApiResult.Error(400, code);
+        if (r.RequestId is null || !Guid.TryParse(r.RequestId, out _)) return Bad("bad-request-id");
+        if (r.Version < 1) return Bad("bad-version");
+        switch (r.Kind)
+        {
+            case "take":
+                if (r.Factory is not { } f || f < 0) return Bad("bad-factory");  // upper bound needs the game
+                if (r.Color is not { } c || c < 0 || c > 5) return Bad("bad-color");
+                if (r.Row is not { } row || row < 0 || row > 5) return Bad("bad-row");
+                if (r.Columns is not null) return Bad("unexpected-columns");
+                return null;
+            case "wall":
+                if (r.Columns is not { Length: 5 } cols || cols.Any(x => x < -1 || x > 5)) return Bad("bad-columns");
+                if (r.Factory is not null || r.Color is not null || r.Row is not null) return Bad("unexpected-take-fields");
+                return null;
+            default:
+                return Bad("bad-kind");
+        }
+    }
+
+    static string RequestHash(MoveRequest r)
+    {
+        var canonical = $"{r.Version}|{r.Kind}|{r.Factory}|{r.Color}|{r.Row}|{string.Join(',', r.Columns ?? [])}";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    Decision Apply(GameRecord g, Game game, Move move, int seat, string actor, string? requestId, string? hash)
+    {
+        var record = new MoveRecord(g.Id, 0, seat, actor, Json.Serialize(Projection.Describe(move)), requestId, hash, null, Now());
+        game.Play(move);
+        bool finished = game.IsFinished;
+        return new Commit(g with
+        {
+            StateJson = Json.Serialize(game.ToSnapshot()),
+            Status = finished ? Status.Finished : Status.Playing,
+            FinishReason = finished ? (AnyFullWallRow(game) ? "normal" : "stalemate") : null,
+        }, record);
+    }
+
+    static bool AnyFullWallRow(Game game) =>
+        game.players.Any(p => Enumerable.Range(0, 5).Any(r => Enumerable.Range(0, 5).All(c => p.grid[r, c] >= 0)));
+
+    /// A bot's move, or a human's forced move ("auto"), computed outside the
+    /// lock against `version`; refused if anything changed since.
+    public Task<ApiResult> ApplyServerMove(string id, long version, Move move, string actor) => Mutate(id, actor, g =>
+    {
+        if (g.Status != Status.Playing) return Reject(409, "not-playing");
+        if (g.Version != version) return Reject(409, "stale");
+        var game = Game.FromSnapshot(Projection.Snapshot(g));
+        var seat = g.Seats[game.activePlayer];
+        bool allowed = seat.Kind == SeatKind.Bot
+                       || (seat.Kind == SeatKind.Human && actor == "auto" && game.ForcedMove() is not null);
+        if (!allowed) return Reject(409, "not-a-server-turn");
+        if (!game.IsValid(move))
+        {
+            log.LogError("server move {Move} is invalid for game {Game}", move, id);
+            return Reject(409, "illegal");
+        }
+        return Apply(g, game, move, seat.Idx, actor, null, null);
+    });
 }

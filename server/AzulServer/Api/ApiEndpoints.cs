@@ -5,6 +5,7 @@ namespace AzulServer.Api;
 
 public sealed record CreateGameRequest(int Players);
 public sealed record SetKindRequest(string? Kind);
+public sealed record MoveRequest(long Version, string? RequestId, string? Kind, int? Factory, int? Color, int? Row, int[]? Columns);
 
 public static class ApiEndpoints
 {
@@ -30,6 +31,8 @@ public static class ApiEndpoints
             (await s.ToBot(id, idx, c.Email())).ToHttp());
         api.MapPost("/games/{id}/seats/{idx:int}/take-back", async (HttpContext c, GameService s, string id, int idx) =>
             (await s.TakeBack(id, idx, c.Email())).ToHttp());
+        api.MapPost("/games/{id}/moves", async (HttpContext c, GameService s, string id, MoveRequest r) =>
+            (await s.Move(id, c.Email(), r)).ToHttp());
         api.MapDelete("/games/{id}", async (HttpContext c, GameService s, string id) =>
             (await s.Delete(id, c.Email())).ToHttp());
     }
