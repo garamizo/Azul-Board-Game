@@ -35,3 +35,40 @@ test('two people and a bot finish a 3-player game, surviving a server restart', 
   await expect(bob.getByTestId('result')).toBeVisible({ timeout: 15_000 });
   await noHorizontalScroll(alice);
 });
+
+test('on a phone a bot move shows a bubble that taps go through, except its ×', async ({ browser }) => {
+  const alice = await person(browser, 'alice@example.com', { width: 360, height: 740 }, { reducedMotion: 'no-preference' });
+  const id = await newGame(alice, 2);
+  await alice.getByRole('button', { name: 'Start' }).click();
+  await expect(alice.getByTestId('status')).toBeVisible();
+  // Bubbles last 3 s, so record each as it appears instead of racing to catch it:
+  // its text, whether a tap at its middle reaches the page under it (hit testing
+  // honours pointer-events), and whether a tap on × reaches the × button.
+  await alice.evaluate(() => {
+    const seen: { text: string; through: boolean; close: boolean }[] = [];
+    (window as unknown as { bubbles: typeof seen }).bubbles = seen;
+    const done = new WeakSet<Element>();
+    new MutationObserver(() => {
+      for (const b of document.querySelectorAll('[data-testid="toast"]')) {
+        if (done.has(b)) continue;
+        done.add(b);
+        const r = b.getBoundingClientRect();
+        const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        const x = b.querySelector('button')!.getBoundingClientRect();
+        const hit = document.elementFromPoint(x.left + x.width / 2, x.top + x.height / 2);
+        seen.push({ text: b.textContent ?? '', through: !under?.closest('[data-testid="toast"]'),
+          close: !!hit?.closest('button[aria-label="Dismiss"]') });
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  const moves = async () => (await alice.evaluate(() => (window as unknown as { bubbles: { text: string }[] }).bubbles))
+    .filter((b) => /took|placed|sent|scored/.test(b.text));
+  for (let i = 0; i < 40 && (await moves()).length === 0; i++) {
+    if (!(await playTurn(alice, id))) await alice.waitForTimeout(200);
+  }
+  const [first] = await moves();
+  expect(first).toBeDefined();
+  expect(first.text).toContain('Bot 2');
+  const all = await alice.evaluate(() => (window as unknown as { bubbles: { through: boolean; close: boolean }[] }).bubbles);
+  expect(all.every((b) => b.through && b.close)).toBe(true);
+});
