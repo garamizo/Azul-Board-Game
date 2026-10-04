@@ -14,6 +14,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-04-hub-results-design.md` (cited as **spec §n**). The hub contract it implements: `~/playhub/docs/superpowers/specs/2026-10-03-hub-v1-design.md` section 5 (cited as **hub §5.x**). The hub's validator is `~/playhub/src/lib/server/ingest/schema.ts`.
 
+**Depends on:** the playhub CLI branch (worktree `~/playhub-games-cli`, branch `feat/games-cli`, implemented first). Its `results validate` command is the required contract check in Task 11. Its `games put` and `games issue-key` commands provide the dev key for the end-to-end run.
+
 ## Global Constraints
 
 **Repo and tooling**
@@ -77,7 +79,7 @@ These are the five conditions the spec implies that the per-feature tests would 
 2. **The hub answers 2xx with an empty or non-JSON body**, for example through a proxy. The row must still become `sent`; only the status decides the outcome. [Task 7: `AnyTwoHundredIsSentWhateverTheBody`]
 3. **Sub-millisecond timestamps.** `"O"` strings carry 7 fractional digits. They must be truncated, not rounded: rounding `18:41:52.9999999` would move the instant into the next second, and could put `started_at` after `finished_at`. [Task 4: `TimestampsAreTruncatedToMilliseconds`]
 4. **A game deleted after its report is queued but before it is sent.** The report must still be sent. Only the replay link 404s. [Task 7: `ReportOfADeletedGameIsStillSent`]
-5. **A bot hand-over on the very last turn.** The finishing move is not yet in `moves` when the report is built, so it must be unioned in. A person whose seat the bot finished for must make the match unrated. [Task 4: `BotPlayedSeatsIncludesThePendingMove`; Task 6: `HandOverMakesTheMatchUnrated`, where every remaining move, the finishing one included, is a bot move]
+5. **A bot hand-over on the very last turn.** The finishing move is not yet in `moves` when the report is built, so it must be unioned in. A person whose seat the bot finished for must make the match unrated. [Task 4: `BotPlayedSeatsIncludesThePendingMove`; Task 6: `ABotFinishingForAPersonMakesItUnrated`, from a deterministic penultimate state with no stored bot move, so it fails if `commit.Move` is left out]
 
 ---
 
@@ -96,11 +98,12 @@ These are the five conditions the spec implies that the per-feature tests would 
 | `server/AzulServer/AzulOptions.cs` | modify | `Hub` property, parsed from the environment |
 | `server/AzulServer/Data/Db.cs` | modify | migration 2; `Migrations` made `internal` |
 | `server/AzulServer/Data/GameStore.cs` | modify | `GameRecord` gains `StartedAt`, `FinishedAt`, `HubTracked`, `BotKey`; read/write them |
-| `server/AzulServer/Games/GameService.cs` | modify | stamp at `Start`; queue in `Mutate`; `BeforeOutboxInsert` hook; `Delete` guard |
+| `server/AzulServer/Hub/HubReportBuilder.cs` | create | `IHubReportBuilder` seam over `HubReport.Build` (tests inject a throwing builder) |
+| `server/AzulServer/Games/GameService.cs` | modify | stamp at `Start`; build via `IHubReportBuilder` and queue in `Mutate`'s transaction; `Delete` guard |
 | `server/AzulServer/Games/BotScheduler.cs` | modify | `MctsBrain.RolloutCap`, `MctsBrain.BrainRevision` |
-| `server/AzulServer/Program.cs` | modify | `hub` command dispatch; DI for `BotIdentity`, `HubSignal`, `HubSender`, the `hub` HttpClient; log the bot key |
+| `server/AzulServer/Program.cs` | modify | `hub` command dispatch; DI for `BotIdentity`, `HubSignal`, `IHubReportBuilder`, `HubSender`, the `hub` HttpClient; log the bot key |
 | `server/AzulServer/Api/ApiEndpoints.cs` | modify | `/api/me` returns `hubUrl` |
-| `server/AzulServer.Tests/Hub/*.cs` | create | `HubTestKit`, `HubContractTests`, `BotIdentityTests`, `HubSchemaTests`, `HubReportTests`, `HubOutboxTests`, `HubFlowTests`, `HubSenderTests`, `HubCommandsTests`, `golden/*.json` |
+| `server/AzulServer.Tests/Hub/*.cs` | create | `HubTestKit`, `HubPlay` (deterministic penultimate states), `HubContractTests`, `BotIdentityTests`, `HubSchemaTests`, `HubReportTests`, `HubOutboxTests`, `HubFlowTests`, `HubSenderTests`, `HubCommandsTests`, `golden/*.json` |
 | `server/AzulServer.Tests/Play.cs` | modify | `Play.ToEnd` helper |
 | `server/AzulServer.Tests/StoreTests.cs` | modify | schema version 2; new columns round-trip |
 | `web/src/lib/api.ts`, `web/src/App.svelte`, `web/src/App.test.ts` | modify/create | `hubUrl` and the header links |
@@ -521,7 +524,7 @@ git commit -m "server: fingerprinted bot key for the hub"   # + trailer block
   - `GameRecord.BotKey` (`string?`)
 
   All four are `init` properties declared in the record body, so every existing positional constructor call still compiles, and `with` copies them.
-- Also produces: `Db.Migrations` (now `internal static`); the table `hub_reports`.
+- Also produces: `Db.Migrations` (now `internal static`); the table `hub_reports`, including `lease_id` (the claim that may record an outcome; spec 6.3, lease ownership).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -635,7 +638,8 @@ In `server/AzulServer/Data/Db.cs`, change `static readonly string[] Migrations =
           last_error TEXT,
           created_at TEXT NOT NULL,
           sent_at TEXT,
-          alerted_at TEXT);
+          alerted_at TEXT,
+          lease_id TEXT);
         CREATE INDEX hub_reports_due ON hub_reports(status, next_attempt_at);
         """,
 ```
@@ -739,7 +743,7 @@ git commit -m "server: schema 2, hub columns on games and the hub_reports outbox
   - Test kit:
     - `HubFixtures.Finished(...) -> GameRecord`
     - `HubFixtures.NewDb() -> Db`
-    - `FakeHub` (`HttpMessageHandler` + `IHttpClientFactory`)
+    - `FakeHub` (`HttpMessageHandler` + `IHttpClientFactory`, with an optional `Gate` that holds requests)
     - `ListLogger<T>`
 
 - [ ] **Step 1: Write the test kit**
@@ -801,11 +805,14 @@ public sealed class FakeHub : HttpMessageHandler, IHttpClientFactory
     public readonly List<(HttpRequestMessage Request, string Body)> Requests = new();
     public Func<HttpResponseMessage> Respond = () => new HttpResponseMessage(HttpStatusCode.Created) { Content = new StringContent("{}") };
     public Exception? Throw;
+    /// When set, every request is recorded and then held until the test completes it.
+    public TaskCompletionSource? Gate;
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
         lock (Requests) Requests.Add((request, body));
+        if (Gate is { } gate) await gate.Task.WaitAsync(ct);
         if (Throw is not null) throw Throw;
         return Respond();
     }
@@ -1135,15 +1142,15 @@ git commit -m "server: hub report body, ranks, rated rule and golden bodies"   #
 - Test: `server/AzulServer.Tests/Hub/HubOutboxTests.cs`
 
 **Interfaces:**
-- Consumes: `HubReport.Build`, `HubReport.BotPlayedSeats`, `GameStore.Load`.
+- Consumes: `HubReport.Build`, `HubReport.BotPlayedSeats`, `GameStore.Load`, and the `lease_id` column (Task 3).
 - Produces (all static on `HubOutbox`; `now` and the other stamps are `"O"` UTC strings):
   - **Records:**
-    - `HubRow(string GameId, string Body, string Status, int Attempts, string NextAttemptAt, int? LastStatus, string? LastError, string CreatedAt, string? SentAt, string? AlertedAt)`
-    - `HubClaim(string Body, int Attempts)`
+    - `HubRow(string GameId, string Body, string Status, int Attempts, string NextAttemptAt, int? LastStatus, string? LastError, string CreatedAt, string? SentAt, string? AlertedAt, string? LeaseId)`
+    - `HubClaim(string Body, int Attempts, string LeaseId)`
     - `HubFailure(string GameId, int? LastStatus, string? LastError)`
     - `HubSummary(IReadOnlyDictionary<string, int> Counts, IReadOnlyList<HubFailure> Failed, string? OldestPendingCreatedAt)`
   - **Queueing:**
-    - `bool Queue(SqliteConnection c, SqliteTransaction tx, string gameId, string body, string now)`
+    - `bool Queue(SqliteConnection c, SqliteTransaction tx, string gameId, string body, string now)`. It uses `INSERT ... ON CONFLICT(game_id) DO NOTHING`, not `INSERT OR IGNORE`, so a failing trigger or constraint still aborts the statement (Task 6's atomicity test depends on this).
     - `bool Exists(SqliteConnection c, SqliteTransaction? tx, string gameId)`
     - `HubRow? Get(SqliteConnection c, SqliteTransaction? tx, string gameId)`
   - **Reconcile:**
@@ -1151,19 +1158,19 @@ git commit -m "server: hub report body, ranks, rated rule and golden bodies"   #
     - `int QueueMissing(Db db, string? publicOrigin, string now, ILogger log)`
   - **Claiming:**
     - `List<string> DueIds(SqliteConnection c, string now, int limit)`
-    - `HubClaim? TryClaim(SqliteConnection c, string gameId, string now, string leaseUntil)`
-  - **Recording outcomes:**
-    - `void MarkSent(SqliteConnection c, string gameId, int status, string now)`
-    - `void MarkFailed(SqliteConnection c, string gameId, int status, string? error)`
-    - `void MarkRetry(SqliteConnection c, string gameId, int? status, string? error, string nextAttemptAt)`
+    - `HubClaim? TryClaim(SqliteConnection c, string gameId, string now, string leaseUntil)`, which sets a fresh `lease_id`
+  - **Recording outcomes:** each returns `false` when the lease is stale, meaning 0 rows were updated and the outcome must be dropped. Each clears `lease_id`.
+    - `bool MarkSent(SqliteConnection c, string gameId, string leaseId, int status, string now)`
+    - `bool MarkFailed(SqliteConnection c, string gameId, string leaseId, int status, string? error)`
+    - `bool MarkRetry(SqliteConnection c, string gameId, string leaseId, int? status, string? error, string nextAttemptAt)`
   - **Alerts:**
     - `List<string> StuckIds(SqliteConnection c, string createdBefore, string alertedBefore)`
     - `void MarkAlerted(SqliteConnection c, string gameId, string now)`
   - **Operator commands:**
     - `HubSummary Summary(SqliteConnection c)`
     - `List<string> FailedIds(SqliteConnection c)`
-    - `string ResetForRetry(SqliteConnection c, string gameId, string now)`, returning `"pending"`, `"already sent"` or `"no report"`
-    - `string Rebuild(Db db, string gameId, string? publicOrigin, string now)`, returning `"rebuilt"`, `"already sent"`, `"game deleted"` or `"unbuildable: <reason>"`
+    - `string ResetForRetry(SqliteConnection c, string gameId, string now)`, returning `"pending"`, `"already sent"` or `"no report"`. It is one conditional `UPDATE` that also clears `lease_id`.
+    - `string Rebuild(Db db, string gameId, string? publicOrigin, string now)`, returning `"rebuilt"`, `"already sent"`, `"game deleted"` or `"unbuildable: <reason>"`. It clears `lease_id` in the same statement.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1174,7 +1181,7 @@ using AzulServer.Data;
 using AzulServer.Games;
 using AzulServer.Hub;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using static AzulServer.Tests.HubFixtures;
 
 namespace AzulServer.Tests;
@@ -1187,6 +1194,7 @@ public sealed class HubOutboxTests : IDisposable
     const string T0 = "2026-10-04T19:00:00.0000000Z";
     const string T1 = "2026-10-04T19:01:00.0000000Z";
     const string T5 = "2026-10-04T19:05:00.0000000Z";
+    const string T9 = "2026-10-04T19:09:00.0000000Z";
     static readonly SeatRecord[] Two = [Human(0, "alice@example.com"), Bot(1)];
 
     void InsertGame(GameRecord g)
@@ -1205,49 +1213,81 @@ public sealed class HubOutboxTests : IDisposable
         tx.Commit();
     }
 
+    HubRow Row(string id)
+    {
+        using var c = db.Open();
+        return HubOutbox.Get(c, null, id)!;
+    }
+
+    /// Claims at T0 (lease to T5) and returns the lease id.
+    string Claim(string id)
+    {
+        using var c = db.Open();
+        return HubOutbox.TryClaim(c, id, T0, T5)!.LeaseId;
+    }
+
     [Fact]
     public void QueueIsInsertOnce()
     {
         QueueRow("g", "{\"first\":1}");
         QueueRow("g", "{\"second\":1}");
-        using var c = db.Open();
-        var row = HubOutbox.Get(c, null, "g")!;
-        Assert.Equal(("{\"first\":1}", "pending", 0, T0), (row.Body, row.Status, row.Attempts, row.NextAttemptAt));
+        var row = Row("g");
+        Assert.Equal(("{\"first\":1}", "pending", 0, T0, (string?)null),
+            (row.Body, row.Status, row.Attempts, row.NextAttemptAt, row.LeaseId));
     }
 
     [Fact]
-    public void AClaimIsALease()
+    public void AClaimIsALeaseWithItsOwnId()
     {
         QueueRow("g");
         using var c = db.Open();
         Assert.Equal(["g"], HubOutbox.DueIds(c, T0, 10));
-        var claim = HubOutbox.TryClaim(c, "g", T0, T5);
-        Assert.Equal(new HubClaim("{\"x\":1}", 0), claim);
+        var first = HubOutbox.TryClaim(c, "g", T0, T5)!;
+        Assert.Equal(("{\"x\":1}", 0), (first.Body, first.Attempts));
+        Assert.Equal(first.LeaseId, HubOutbox.Get(c, null, "g")!.LeaseId);
         Assert.Null(HubOutbox.TryClaim(c, "g", T0, T5));   // leased
         Assert.Empty(HubOutbox.DueIds(c, T1, 10));
-        Assert.NotNull(HubOutbox.TryClaim(c, "g", T5, "2026-10-04T19:10:00.0000000Z"));  // lease expired
+        var second = HubOutbox.TryClaim(c, "g", T5, T9)!;   // lease expired
+        Assert.NotEqual(first.LeaseId, second.LeaseId);
+        Assert.False(HubOutbox.MarkSent(c, "g", first.LeaseId, 201, T5));   // the expired claim's outcome is stale
+        Assert.True(HubOutbox.MarkSent(c, "g", second.LeaseId, 201, T5));
     }
 
     [Fact]
-    public void OutcomesAreRecorded()
+    public void OutcomesAreRecordedUnderTheLease()
     {
         QueueRow("a"); QueueRow("b"); QueueRow("c");
+        string la = Claim("a"), lb = Claim("b"), lc = Claim("c");
         using var c = db.Open();
-        HubOutbox.MarkSent(c, "a", 201, T1);
-        HubOutbox.MarkFailed(c, "b", 422, "bad body");
-        HubOutbox.MarkRetry(c, "c", null, "connection refused", T5);
-        Assert.Equal(("sent", 1, 201, T1), (HubOutbox.Get(c, null, "a")!.Status, HubOutbox.Get(c, null, "a")!.Attempts,
-            HubOutbox.Get(c, null, "a")!.LastStatus, HubOutbox.Get(c, null, "a")!.SentAt));
-        Assert.Equal(("failed", 422, "bad body"), (HubOutbox.Get(c, null, "b")!.Status, HubOutbox.Get(c, null, "b")!.LastStatus,
-            HubOutbox.Get(c, null, "b")!.LastError));
-        var retry = HubOutbox.Get(c, null, "c")!;
-        Assert.Equal(("pending", 1, (int?)null, T5), (retry.Status, retry.Attempts, retry.LastStatus, retry.NextAttemptAt));
+        Assert.True(HubOutbox.MarkSent(c, "a", la, 201, T1));
+        Assert.True(HubOutbox.MarkFailed(c, "b", lb, 422, "bad body"));
+        Assert.True(HubOutbox.MarkRetry(c, "c", lc, null, "connection refused", T5));
+        var a = Row("a");
+        Assert.Equal(("sent", 1, (int?)201, (string?)T1, (string?)null), (a.Status, a.Attempts, a.LastStatus, a.SentAt, a.LeaseId));
+        var b = Row("b");
+        Assert.Equal(("failed", (int?)422, (string?)"bad body", (string?)null), (b.Status, b.LastStatus, b.LastError, b.LeaseId));
+        var r = Row("c");
+        Assert.Equal(("pending", 1, (int?)null, T5, (string?)null), (r.Status, r.Attempts, r.LastStatus, r.NextAttemptAt, r.LeaseId));
         var summary = HubOutbox.Summary(c);
-        Assert.Equal(1, summary.Counts["sent"]);
-        Assert.Equal(1, summary.Counts["failed"]);
-        Assert.Equal(1, summary.Counts["pending"]);
+        Assert.Equal((1, 1, 1), (summary.Counts["sent"], summary.Counts["failed"], summary.Counts["pending"]));
         Assert.Equal([new HubFailure("b", 422, "bad body")], summary.Failed);
         Assert.Equal(T0, summary.OldestPendingCreatedAt);
+    }
+
+    [Fact]
+    public void ARetryInvalidatesTheInFlightOutcome()
+    {
+        QueueRow("g");
+        var lease = Claim("g");
+        using var c = db.Open();
+        Assert.Equal("pending", HubOutbox.ResetForRetry(c, "g", T1));
+        var reset = Row("g");
+        Assert.Equal(((string?)null, T1), (reset.LeaseId, reset.NextAttemptAt));
+        Assert.False(HubOutbox.MarkSent(c, "g", lease, 201, T1));
+        Assert.False(HubOutbox.MarkFailed(c, "g", lease, 422, "late"));
+        Assert.False(HubOutbox.MarkRetry(c, "g", lease, 500, "late", T9));
+        var after = Row("g");
+        Assert.Equal(("pending", 0, T1), (after.Status, after.Attempts, after.NextAttemptAt));
     }
 
     [Fact]
@@ -1275,7 +1315,7 @@ public sealed class HubOutboxTests : IDisposable
         Assert.False(HubOutbox.Exists(c, null, "old"));
         Assert.False(HubOutbox.Exists(c, null, "live"));
         Assert.False(HubOutbox.Exists(c, null, "keyless"));
-        Assert.Equal(1, log.Count(Microsoft.Extensions.Logging.LogLevel.Error, "keyless"));
+        Assert.Equal(1, log.Count(LogLevel.Error, "keyless"));
         Assert.Equal(["keyless"], HubOutbox.MissingIds(c));
     }
 
@@ -1283,12 +1323,14 @@ public sealed class HubOutboxTests : IDisposable
     public void RetryPutsUnsentRowsBack()
     {
         QueueRow("f"); QueueRow("s");
+        string lf = Claim("f"), ls = Claim("s");
         using var c = db.Open();
-        HubOutbox.MarkFailed(c, "f", 409, "dup");
-        HubOutbox.MarkSent(c, "s", 200, T1);
+        HubOutbox.MarkFailed(c, "f", lf, 409, "dup");
+        HubOutbox.MarkSent(c, "s", ls, 200, T1);
         Assert.Equal("pending", HubOutbox.ResetForRetry(c, "f", T5));
-        Assert.Equal(("pending", T5), (HubOutbox.Get(c, null, "f")!.Status, HubOutbox.Get(c, null, "f")!.NextAttemptAt));
+        Assert.Equal(("pending", T5), (Row("f").Status, Row("f").NextAttemptAt));
         Assert.Equal("already sent", HubOutbox.ResetForRetry(c, "s", T5));
+        Assert.Equal("sent", Row("s").Status);
         Assert.Equal("no report", HubOutbox.ResetForRetry(c, "nope", T5));
         Assert.Empty(HubOutbox.FailedIds(c));   // f is pending again
     }
@@ -1299,18 +1341,26 @@ public sealed class HubOutboxTests : IDisposable
         InsertGame(Finished("g", Two));
         QueueRow("g", "{\"stale\":true}");
         QueueRow("gone", "{\"keep\":true}");
-        using (var c = db.Open()) HubOutbox.MarkFailed(c, "g", 422, "old bug");
+        var lease = Claim("g");   // a send is in flight
         Assert.Equal("rebuilt", HubOutbox.Rebuild(db, "g", null, T5));
         Assert.Equal("game deleted", HubOutbox.Rebuild(db, "gone", null, T5));
-        using var c2 = db.Open();
-        var g = HubOutbox.Get(c2, null, "g")!;
-        Assert.Equal(("pending", 0, T5), (g.Status, g.Attempts, g.NextAttemptAt));
+        var g = Row("g");
+        Assert.Equal(("pending", 0, T5, (string?)null), (g.Status, g.Attempts, g.NextAttemptAt, g.LeaseId));
         Assert.Contains("\"external_id\":\"g\"", g.Body);
-        Assert.Equal("{\"keep\":true}", HubOutbox.Get(c2, null, "gone")!.Body);
+        using (var c = db.Open()) Assert.False(HubOutbox.MarkSent(c, "g", lease, 201, T5));   // the old body's answer is dropped
+        Assert.Equal("pending", Row("g").Status);
+        Assert.Equal("{\"keep\":true}", Row("gone").Body);
+
         InsertGame(Finished("nokey", Two) with { BotKey = null });
         QueueRow("nokey", "{\"orig\":1}");
         Assert.Equal("unbuildable: no bot key", HubOutbox.Rebuild(db, "nokey", null, T5));
-        Assert.Equal("{\"orig\":1}", HubOutbox.Get(c2, null, "nokey")!.Body);
+        Assert.Equal("{\"orig\":1}", Row("nokey").Body);
+
+        InsertGame(Finished("done", Two));
+        QueueRow("done", "{\"sent\":1}");
+        using (var c = db.Open()) HubOutbox.MarkSent(c, "done", Claim("done"), 201, T1);
+        Assert.Equal("already sent", HubOutbox.Rebuild(db, "done", null, T5));
+        Assert.Equal("{\"sent\":1}", Row("done").Body);
     }
 }
 ```
@@ -1331,16 +1381,19 @@ using Microsoft.Data.Sqlite;
 namespace AzulServer.Hub;
 
 public sealed record HubRow(string GameId, string Body, string Status, int Attempts, string NextAttemptAt,
-    int? LastStatus, string? LastError, string CreatedAt, string? SentAt, string? AlertedAt);
+    int? LastStatus, string? LastError, string CreatedAt, string? SentAt, string? AlertedAt, string? LeaseId);
 
-public sealed record HubClaim(string Body, int Attempts);
+public sealed record HubClaim(string Body, int Attempts, string LeaseId);
 
 public sealed record HubFailure(string GameId, int? LastStatus, string? LastError);
 
 public sealed record HubSummary(IReadOnlyDictionary<string, int> Counts, IReadOnlyList<HubFailure> Failed, string? OldestPendingCreatedAt);
 
 /// Every statement on hub_reports. Timestamps are GameService's "O" UTC
-/// strings, which compare correctly as text.
+/// strings, which compare correctly as text. Outcomes are written only under
+/// the lease that claimed the row (spec 6.3, lease ownership): a retry or a
+/// rebuild clears lease_id, so a request still in flight cannot record its
+/// answer over a reset or replaced row.
 public static class HubOutbox
 {
     static SqliteCommand Command(SqliteConnection c, SqliteTransaction? tx, string sql, params (string Name, object? Value)[] args)
@@ -1368,9 +1421,12 @@ public static class HubOutbox
         return cmd.ExecuteNonQuery();
     }
 
+    /// ON CONFLICT DO NOTHING (not INSERT OR IGNORE): only the primary key
+    /// conflict is ignored; any other failure aborts the finishing commit.
     public static bool Queue(SqliteConnection c, SqliteTransaction tx, string gameId, string body, string now) =>
-        Exec(c, tx, "INSERT OR IGNORE INTO hub_reports(game_id, body, status, attempts, next_attempt_at, created_at) " +
-                    "VALUES ($g, $b, 'pending', 0, $now, $now)", ("$g", gameId), ("$b", body), ("$now", now)) == 1;
+        Exec(c, tx, "INSERT INTO hub_reports(game_id, body, status, attempts, next_attempt_at, created_at) " +
+                    "VALUES ($g, $b, 'pending', 0, $now, $now) ON CONFLICT(game_id) DO NOTHING",
+            ("$g", gameId), ("$b", body), ("$now", now)) == 1;
 
     public static bool Exists(SqliteConnection c, SqliteTransaction? tx, string gameId)
     {
@@ -1381,13 +1437,13 @@ public static class HubOutbox
     public static HubRow? Get(SqliteConnection c, SqliteTransaction? tx, string gameId)
     {
         using var cmd = Command(c, tx,
-            "SELECT game_id, body, status, attempts, next_attempt_at, last_status, last_error, created_at, sent_at, alerted_at " +
+            "SELECT game_id, body, status, attempts, next_attempt_at, last_status, last_error, created_at, sent_at, alerted_at, lease_id " +
             "FROM hub_reports WHERE game_id = $g", ("$g", gameId));
         using var r = cmd.ExecuteReader();
         if (!r.Read()) return null;
         string? S(int i) => r.IsDBNull(i) ? null : r.GetString(i);
         return new HubRow(r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetString(4),
-            r.IsDBNull(5) ? null : r.GetInt32(5), S(6), r.GetString(7), S(8), S(9));
+            r.IsDBNull(5) ? null : r.GetInt32(5), S(6), r.GetString(7), S(8), S(9), S(10));
     }
 
     public static List<string> MissingIds(SqliteConnection c) => Ids(c, null,
@@ -1395,8 +1451,8 @@ public static class HubOutbox
         "AND id NOT IN (SELECT game_id FROM hub_reports) ORDER BY id");
 
     /// Reconcile (spec 6.2): build and queue each finished tracked game that
-    /// has no report. One BEGIN IMMEDIATE transaction per game reads it and
-    /// writes the row, so a concurrent Delete cannot interleave.
+    /// has no report. One write transaction per game reads it and writes the
+    /// row, so a concurrent Delete cannot interleave.
     public static int QueueMissing(Db db, string? publicOrigin, string now, ILogger log)
     {
         List<string> ids;
@@ -1431,32 +1487,35 @@ public static class HubOutbox
         "SELECT game_id FROM hub_reports WHERE status = 'pending' AND next_attempt_at <= $now " +
         "ORDER BY next_attempt_at LIMIT $n", ("$now", now), ("$n", limit));
 
-    /// Takes a lease: the row is not due again before `leaseUntil`, so two
-    /// senders (or a sender and a retry) never send it at once.
+    /// Takes a lease: the row is not due again before `leaseUntil`, and only
+    /// the returned LeaseId may record this attempt's outcome.
     public static HubClaim? TryClaim(SqliteConnection c, string gameId, string now, string leaseUntil)
     {
+        var leaseId = Guid.NewGuid().ToString("N");
         using var tx = c.BeginTransaction();
-        if (Exec(c, tx, "UPDATE hub_reports SET next_attempt_at = $lease " +
+        if (Exec(c, tx, "UPDATE hub_reports SET next_attempt_at = $until, lease_id = $lease " +
                         "WHERE game_id = $g AND status = 'pending' AND next_attempt_at <= $now",
-                ("$lease", leaseUntil), ("$g", gameId), ("$now", now)) != 1)
+                ("$until", leaseUntil), ("$lease", leaseId), ("$g", gameId), ("$now", now)) != 1)
             return null;
         var row = Get(c, tx, gameId)!;
         tx.Commit();
-        return new HubClaim(row.Body, row.Attempts);
+        return new HubClaim(row.Body, row.Attempts, leaseId);
     }
 
-    public static void MarkSent(SqliteConnection c, string gameId, int status, string now) =>
+    public static bool MarkSent(SqliteConnection c, string gameId, string leaseId, int status, string now) =>
         Exec(c, null, "UPDATE hub_reports SET status = 'sent', attempts = attempts + 1, last_status = $s, " +
-                      "last_error = NULL, sent_at = $now WHERE game_id = $g", ("$s", status), ("$now", now), ("$g", gameId));
+                      "last_error = NULL, sent_at = $now, lease_id = NULL WHERE game_id = $g AND lease_id = $l",
+            ("$s", status), ("$now", now), ("$g", gameId), ("$l", leaseId)) == 1;
 
-    public static void MarkFailed(SqliteConnection c, string gameId, int status, string? error) =>
+    public static bool MarkFailed(SqliteConnection c, string gameId, string leaseId, int status, string? error) =>
         Exec(c, null, "UPDATE hub_reports SET status = 'failed', attempts = attempts + 1, last_status = $s, " +
-                      "last_error = $e WHERE game_id = $g", ("$s", status), ("$e", error), ("$g", gameId));
+                      "last_error = $e, lease_id = NULL WHERE game_id = $g AND lease_id = $l",
+            ("$s", status), ("$e", error), ("$g", gameId), ("$l", leaseId)) == 1;
 
-    public static void MarkRetry(SqliteConnection c, string gameId, int? status, string? error, string nextAttemptAt) =>
+    public static bool MarkRetry(SqliteConnection c, string gameId, string leaseId, int? status, string? error, string nextAttemptAt) =>
         Exec(c, null, "UPDATE hub_reports SET attempts = attempts + 1, last_status = $s, last_error = $e, " +
-                      "next_attempt_at = $next WHERE game_id = $g AND status = 'pending'",
-            ("$s", status), ("$e", error), ("$next", nextAttemptAt), ("$g", gameId));
+                      "next_attempt_at = $next, lease_id = NULL WHERE game_id = $g AND lease_id = $l",
+            ("$s", status), ("$e", error), ("$next", nextAttemptAt), ("$g", gameId), ("$l", leaseId)) == 1;
 
     public static List<string> StuckIds(SqliteConnection c, string createdBefore, string alertedBefore) => Ids(c, null,
         "SELECT game_id FROM hub_reports WHERE status = 'pending' AND created_at < $created " +
@@ -1485,33 +1544,35 @@ public static class HubOutbox
     public static List<string> FailedIds(SqliteConnection c) =>
         Ids(c, null, "SELECT game_id FROM hub_reports WHERE status = 'failed' ORDER BY created_at");
 
+    /// One conditional statement (no read-then-update); clearing lease_id
+    /// drops the answer of any send still in flight.
     public static string ResetForRetry(SqliteConnection c, string gameId, string now)
     {
-        var row = Get(c, null, gameId);
-        if (row is null) return "no report";
-        if (row.Status == "sent") return "already sent";
-        Exec(c, null, "UPDATE hub_reports SET status = 'pending', next_attempt_at = $now WHERE game_id = $g",
-            ("$now", now), ("$g", gameId));
-        return "pending";
+        if (Exec(c, null, "UPDATE hub_reports SET status = 'pending', lease_id = NULL, next_attempt_at = $now " +
+                          "WHERE game_id = $g AND status <> 'sent'", ("$now", now), ("$g", gameId)) == 1)
+            return "pending";
+        return Exists(c, null, gameId) ? "already sent" : "no report";   // only to say why nothing changed
     }
 
     /// Rebuild from the stored game and replace the row only when the build
-    /// succeeds; a report whose game is gone is never touched (spec 6.4).
+    /// succeeds; a sent row and a report whose game is gone are never touched
+    /// (spec 6.4). The replacing statement clears lease_id.
     public static string Rebuild(Db db, string gameId, string? publicOrigin, string now)
     {
         using var c = db.Open();
         using var tx = c.BeginTransaction();
-        if (Get(c, tx, gameId) is { Status: "sent" }) return "already sent";
         var g = GameStore.Load(c, gameId, tx);
         if (g is null) return "game deleted";
         var built = HubReport.Build(g, HubReport.BotPlayedSeats(c, tx, gameId, null), publicOrigin);
         if (built.Body is null) return $"unbuildable: {built.Skip}";
-        Exec(c, tx,
+        int changed = Exec(c, tx,
             "INSERT INTO hub_reports(game_id, body, status, attempts, next_attempt_at, created_at) " +
             "VALUES ($g, $b, 'pending', 0, $now, $now) " +
             "ON CONFLICT(game_id) DO UPDATE SET body = excluded.body, status = 'pending', attempts = 0, " +
-            "next_attempt_at = excluded.next_attempt_at, last_status = NULL, last_error = NULL, sent_at = NULL, alerted_at = NULL",
+            "next_attempt_at = excluded.next_attempt_at, last_status = NULL, last_error = NULL, sent_at = NULL, " +
+            "alerted_at = NULL, lease_id = NULL WHERE hub_reports.status <> 'sent'",
             ("$g", gameId), ("$b", built.Body), ("$now", now));
+        if (changed == 0) return "already sent";
         tx.Commit();
         return "rebuilt";
     }
@@ -1529,7 +1590,7 @@ Expected: PASS.
 
 ```bash
 git add server/AzulServer/Hub/HubOutbox.cs server/AzulServer.Tests/Hub/HubOutboxTests.cs
-git commit -m "server: hub_reports outbox, reconcile, lease and rebuild"   # + trailer block
+git commit -m "server: hub_reports outbox with lease-owned outcomes, reconcile and rebuild"   # + trailer block
 ```
 
 ---
@@ -1538,21 +1599,27 @@ git commit -m "server: hub_reports outbox, reconcile, lease and rebuild"   # + t
 
 **Files:**
 - Create: `server/AzulServer/Hub/HubSignal.cs`
-- Modify: `server/AzulServer/Games/GameService.cs` (the `IFaultInjector`, the constructor, `Start`, `Mutate`, `Delete`)
-- Modify: `server/AzulServer/Program.cs` (register `HubSignal`)
+- Create: `server/AzulServer/Hub/HubReportBuilder.cs`
+- Modify: `server/AzulServer/Games/GameService.cs` (constructor, `Start`, `Mutate`, `Delete`)
+- Modify: `server/AzulServer/Program.cs` (register `HubSignal`, `IHubReportBuilder`)
 - Modify: `server/AzulServer.Tests/Play.cs` (add `ToEnd`)
+- Create: `server/AzulServer.Tests/Hub/HubPlay.cs` (deterministic penultimate states)
 - Test: `server/AzulServer.Tests/Hub/HubFlowTests.cs`
 
 **Interfaces:**
-- Consumes: `HubReport.Build`, `HubReport.BotPlayedSeats`, `HubOutbox.Queue`, `HubOutbox.Exists`, `BotIdentity` (DI), `AzulOptions.PublicOrigin`.
+- Consumes: `HubReport.Build`, `HubReport.BotPlayedSeats`, `HubOutbox.Queue`, `HubOutbox.Exists`, `HubOutbox.QueueMissing`, `BotIdentity` (DI), `AzulOptions.PublicOrigin`.
 - Produces:
-  - `HubSignal.Wake()`
-  - `HubSignal.WaitAsync(TimeSpan, CancellationToken) -> Task<bool>`
-  - `IFaultInjector.BeforeOutboxInsert(string gameId)` (default no-op)
+  - `HubSignal.Wake()` and `HubSignal.WaitAsync(TimeSpan, CancellationToken) -> Task<bool>`
+  - `IHubReportBuilder.Build(GameRecord, ISet<int>, string?) -> HubBuild` and the default `HubReportBuilder`. This is the test seam for a real build exception.
   - `Delete` answers 409 `hub-report-pending`
   - `Play.ToEnd(HttpClient, string id, int seconds = 120) -> Task<GameView>`
+  - Test helpers (used again in Task 7):
+    - `HubPlay.Penultimate(int players, int seed) -> (GameSnapshot State, Move Finishing, int Seat)`
+    - `HubPlay.Insert(Db, string id, SeatRecord[] seats, GameSnapshot state, string creator, bool tracked = true)`, which inserts at version 5
+    - `HubPlay.Request(long version, Move m) -> MoveRequest`
+    - `HubPlay.Body(long version, Move m) -> object`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the helpers and the failing tests**
 
 Add to `server/AzulServer.Tests/Play.cs`, inside `Play`:
 
@@ -1571,6 +1638,75 @@ Add to `server/AzulServer.Tests/Play.cs`, inside `Play`:
     }
 ```
 
+`server/AzulServer.Tests/Hub/HubPlay.cs`:
+
+```csharp
+using Azul;
+using AzulServer.Api;
+using AzulServer.Data;
+using AzulServer.Games;
+
+namespace AzulServer.Tests;
+
+/// Deterministic end-of-game states: the hub tests need to choose who makes
+/// the finishing move and how (person, bot), which a live game cannot.
+public static class HubPlay
+{
+    /// The state one greedy move before a normal finish (a full wall row),
+    /// the move, and the seat that makes it. Tries seeds from `seed` up, so a
+    /// seed whose greedy game stalemates is skipped deterministically.
+    public static (GameSnapshot State, Move Finishing, int Seat) Penultimate(int players, int seed)
+    {
+        for (int s = seed; s < seed + 50; s++)
+        {
+            var game = new Game(players, new Random(s));
+            for (int step = 0; step < 2000 && !game.IsFinished; step++)
+            {
+                var state = game.ToSnapshot();
+                var move = game.GetGreedyMove();
+                var probe = Game.FromSnapshot(state, new Random(s));
+                probe.Play(new Move(move, probe));   // a copy: the returned move is never one that was played
+                if (probe.IsFinished)
+                {
+                    bool normal = probe.players.Any(p => Enumerable.Range(0, 5).Any(r => Enumerable.Range(0, 5).All(c => p.grid[r, c] >= 0)));
+                    if (!normal) break;   // stalemate: next seed
+                    return (state, new Move(move, Game.FromSnapshot(state)), state.ActivePlayer);
+                }
+                game.Play(move);
+            }
+        }
+        throw new InvalidOperationException($"no normal finish for seeds {seed}..{seed + 49}");
+    }
+
+    /// A playing, hub-tracked game at version 5 with no stored moves.
+    public static void Insert(Db db, string id, SeatRecord[] seats, GameSnapshot state, string creator, bool tracked = true)
+    {
+        var g = new GameRecord(id, creator, Status.Playing, seats.Length, 5, Json.Serialize(state), null,
+            "2026-10-04T18:00:00.0000000Z", "2026-10-04T18:00:00.0000000Z", seats)
+        {
+            StartedAt = "2026-10-04T18:00:01.0000000Z",
+            HubTracked = tracked,
+            BotKey = "mcts@0123456789ab",
+        };
+        using var c = db.Open();
+        using var tx = c.BeginTransaction();
+        GameStore.Insert(c, tx, g);
+        tx.Commit();
+    }
+
+    static bool IsTake(Move m) => m.colIdx[0] == Move.NOT_SET;
+
+    public static MoveRequest Request(long version, Move m) => IsTake(m)
+        ? new MoveRequest(version, Guid.NewGuid().ToString(), "take", m.factoryIdx, m.color, m.row, null)
+        : new MoveRequest(version, Guid.NewGuid().ToString(), "wall", null, null, null, (int[])m.colIdx.Clone());
+
+    /// The same move as an HTTP body for POST /api/games/{id}/moves.
+    public static object Body(long version, Move m) => IsTake(m)
+        ? new { version, requestId = Guid.NewGuid().ToString(), kind = "take", factory = m.factoryIdx, color = m.color, row = m.row }
+        : new { version, requestId = Guid.NewGuid().ToString(), kind = "wall", columns = (int[])m.colIdx.Clone() };
+}
+```
+
 `server/AzulServer.Tests/Hub/HubFlowTests.cs`:
 
 ```csharp
@@ -1581,20 +1717,26 @@ using AzulServer.Games;
 using AzulServer.Hub;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using static AzulServer.Tests.HubFixtures;
 
 namespace AzulServer.Tests;
 
 public class HubFlowTests
 {
+    const string Ann = "ann@example.com", Cy = "cy@example.com";
+
     static AzulOptions Fast() => new() { BotWorkers = 1, MinMoveDelaySeconds = 0, SweepSeconds = 0.2 };
 
+    /// SQL NULL comes back as null (not DBNull.Value), so Assert.Null means it.
     static object? Scalar(TestApp app, string sql)
     {
         using var c = app.Service<Db>().Open();
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
-        return cmd.ExecuteScalar();
+        var v = cmd.ExecuteScalar();
+        return v is DBNull ? null : v;
     }
 
     static void Exec(TestApp app, string sql)
@@ -1611,6 +1753,10 @@ public class HubFlowTests
         return JsonNode.Parse(HubOutbox.Get(c, null, id)!.Body)!.AsObject();
     }
 
+    /// `finisher` holds `seat`; every other seat is `other(i)`.
+    static SeatRecord[] Seats(int players, int seat, SeatRecord finisher, Func<int, SeatRecord> other) =>
+        Enumerable.Range(0, players).Select(i => i == seat ? finisher : other(i)).ToArray();
+
     [Fact]
     public async Task StartStampsTheHubFields()
     {
@@ -1626,7 +1772,7 @@ public class HubFlowTests
     }
 
     [Fact]
-    public async Task AFinishedGameQueuesExactlyOneReport()
+    public async Task ALiveGameQueuesExactlyOneReport()
     {
         using var app = new TestApp(Fast());
         var alice = app.Client("alice@example.com");
@@ -1642,84 +1788,117 @@ public class HubFlowTests
     }
 
     [Fact]
-    public async Task HandOverMakesTheMatchUnrated()
+    public async Task ABotFinishingForAPersonMakesItUnrated()
     {
-        // Bob hands over at once, so every later move of his seat, the
-        // finishing one included whenever it is his, is a bot move.
-        using var app = new TestApp(Fast());
-        var alice = app.Client("alice@example.com");
-        var bob = app.Client("bob@example.com");
-        var id = await Play.Started(2, alice, bob);
-        Assert.Equal(HttpStatusCode.OK, (await bob.Post($"/api/games/{id}/seats/1/to-bot")).StatusCode);
-        await Play.ToEnd(alice, id);
-        var r = Report(app, id);
+        // The person hands over just before the last move, so no bot move of
+        // theirs is stored: only the pending finishing move says a bot played
+        // for them. Leaving commit.Move out of BotPlayedSeats fails this test.
+        using var app = new TestApp();   // bots off: the test plays the bot's move itself
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        HubPlay.Insert(app.Service<Db>(), "botfin", Seats(2, seat, Human(seat, Ann), i => Human(i, Cy)), state, creator: Cy);
+        Assert.Equal(HttpStatusCode.OK, (await app.Client(Ann).Post($"/api/games/botfin/seats/{seat}/to-bot")).StatusCode);
+        Assert.Equal(0L, Scalar(app, "SELECT COUNT(*) FROM moves WHERE game_id = 'botfin'"));
+        var res = await app.Service<GameService>().ApplyServerMove("botfin", 6, finishing, "bot");
+        Assert.Equal(200, res.Status);
+        Assert.Equal("finished", Scalar(app, "SELECT status FROM games WHERE id = 'botfin'"));
+        var r = Report(app, "botfin");
         Assert.False((bool)r["rated"]!);
         Assert.Equal(HubReport.BotPlayedReason, (string?)r["unrated_reason"]);
-        Assert.Equal(("human", "bob@example.com"), ((string?)r["players"]![1]!["kind"], (string?)r["players"]![1]!["email"]));
+        Assert.Equal(("human", Ann), ((string?)r["players"]![seat]!["kind"], (string?)r["players"]![seat]!["email"]));
+    }
+
+    [Fact]
+    public async Task APersonFinishingStaysRated()
+    {
+        using var app = new TestApp();
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        HubPlay.Insert(app.Service<Db>(), "clean", Seats(2, seat, Human(seat, Ann), i => Human(i, Cy)), state, creator: Ann);
+        var res = await app.Service<GameService>().Move("clean", Ann, HubPlay.Request(5, finishing));
+        Assert.Equal(200, res.Status);
+        Assert.True((bool)Report(app, "clean")["rated"]!);
+    }
+
+    [Fact]
+    public async Task APersonFinishingAfterABotPlayedAnotherPersonsSeatIsUnrated()
+    {
+        using var app = new TestApp();
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        int other = 1 - seat;
+        HubPlay.Insert(app.Service<Db>(), "mixed", Seats(2, seat, Human(seat, Ann), i => Bot(i, Cy)), state, creator: Ann);
+        Exec(app, $"INSERT INTO moves(game_id, version, seat, actor, move_json, at) VALUES ('mixed', 3, {other}, 'bot', '{{}}', 't')");
+        var res = await app.Service<GameService>().Move("mixed", Ann, HubPlay.Request(5, finishing));
+        Assert.Equal(200, res.Status);
+        var r = Report(app, "mixed");
+        Assert.False((bool)r["rated"]!);
+        Assert.Equal(HubReport.BotPlayedReason, (string?)r["unrated_reason"]);
     }
 
     [Fact]
     public async Task AnUntrackedGameQueuesNothing()
     {
-        using var app = new TestApp(Fast());
-        var alice = app.Client("alice@example.com");
-        var id = await Play.Started(2, alice);
-        Exec(app, $"UPDATE games SET hub_tracked = 0 WHERE id = '{id}'");
-        await Play.ToEnd(alice, id);
+        using var app = new TestApp();
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        HubPlay.Insert(app.Service<Db>(), "old", Seats(2, seat, Human(seat, Ann), i => Bot(i)), state, creator: Ann, tracked: false);
+        Assert.Equal(200, (await app.Service<GameService>().Move("old", Ann, HubPlay.Request(5, finishing))).Status);
+        Assert.Equal("finished", Scalar(app, "SELECT status FROM games WHERE id = 'old'"));
         Assert.Equal(0L, Scalar(app, "SELECT COUNT(*) FROM hub_reports"));
-    }
-
-    sealed class CrashBeforeOutboxInsert : IFaultInjector
-    {
-        public int Calls;
-        public void AfterCommit(string gameId) { }
-        public void BeforeOutboxInsert(string gameId)
-        {
-            Interlocked.Increment(ref Calls);
-            throw new InvalidOperationException("simulated crash before the outbox insert");
-        }
+        Assert.Equal(HttpStatusCode.NoContent, (await app.Client(Ann).DeleteAsync("/api/games/old")).StatusCode);
     }
 
     [Fact]
-    public async Task TheReportCommitsWithTheFinishingMoveOrNotAtAll()
+    public async Task AFailedOutboxInsertRollsBackTheFinishingMove()
     {
-        var fault = new CrashBeforeOutboxInsert();
-        using var app = new TestApp(Fast(), s => s.AddSingleton<IFaultInjector>(fault));
-        var alice = app.Client("alice@example.com");
-        var id = await Play.Started(2, alice);
-        var until = DateTime.UtcNow.AddSeconds(120);
-        while (Volatile.Read(ref fault.Calls) == 0)
-        {
-            if (DateTime.UtcNow > until) throw new TimeoutException("the finishing commit never ran");
-            var v = await Play.Get(alice, id);
-            if (v.Legal is not null) await alice.Post($"/api/games/{id}/moves", Play.AnyLegal(v));  // 500 when hers finishes
-            else await Task.Delay(20);
-        }
-        await Task.Delay(300);  // let a concurrent bot attempt fail the same way
-        Assert.Equal("playing", Scalar(app, $"SELECT status FROM games WHERE id = '{id}'"));
-        Assert.Null(Scalar(app, $"SELECT finished_at FROM games WHERE id = '{id}'"));
-        Assert.Equal(0L, Scalar(app, "SELECT COUNT(*) FROM hub_reports"));
-        Assert.Equal(Scalar(app, $"SELECT version FROM games WHERE id = '{id}'"),
-            Scalar(app, $"SELECT MAX(version) FROM moves WHERE game_id = '{id}'"));
+        using var app = new TestApp();
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        HubPlay.Insert(app.Service<Db>(), "atomic", Seats(2, seat, Human(seat, Ann), i => Bot(i)), state, creator: Ann);
+        // The failure is the outbox INSERT itself, inside the finishing transaction.
+        Exec(app, "CREATE TRIGGER refuse_reports BEFORE INSERT ON hub_reports BEGIN SELECT RAISE(ABORT, 'simulated outbox failure'); END;");
+        var games = app.Service<GameService>();
+        await Assert.ThrowsAsync<SqliteException>(() => games.Move("atomic", Ann, HubPlay.Request(5, finishing)));
+        Assert.Equal((5L, "playing", 0L, 0L), ((long)Scalar(app, "SELECT version FROM games WHERE id = 'atomic'")!,
+            (string)Scalar(app, "SELECT status FROM games WHERE id = 'atomic'")!,
+            (long)Scalar(app, "SELECT COUNT(*) FROM moves WHERE game_id = 'atomic'")!,
+            (long)Scalar(app, "SELECT COUNT(*) FROM hub_reports")!));
+        Assert.Null(Scalar(app, "SELECT finished_at FROM games WHERE id = 'atomic'"));
+
+        Exec(app, "DROP TRIGGER refuse_reports");
+        Assert.Equal(200, (await games.Move("atomic", Ann, HubPlay.Request(5, finishing))).Status);
+        Assert.Equal((6L, "finished", 1L, 1L), ((long)Scalar(app, "SELECT version FROM games WHERE id = 'atomic'")!,
+            (string)Scalar(app, "SELECT status FROM games WHERE id = 'atomic'")!,
+            (long)Scalar(app, "SELECT COUNT(*) FROM moves WHERE game_id = 'atomic'")!,
+            (long)Scalar(app, "SELECT COUNT(*) FROM hub_reports WHERE game_id = 'atomic'")!));
+    }
+
+    sealed class ThrowingBuilder : IHubReportBuilder
+    {
+        public HubBuild Build(GameRecord g, ISet<int> botPlayedSeats, string? publicOrigin) =>
+            throw new InvalidOperationException("simulated report bug");
     }
 
     [Fact]
-    public async Task DeleteWaitsForTheReportThenLeavesItInPlace()
+    public async Task ABuildExceptionCommitsTheMoveAndReconcileRecovers()
     {
-        using var app = new TestApp(Fast());
-        var alice = app.Client("alice@example.com");
-        var id = await Play.Started(2, alice);
-        Exec(app, $"UPDATE games SET bot_key = NULL WHERE id = '{id}'");   // the build will be skipped
-        await Play.ToEnd(alice, id);
+        var log = new ListLogger<GameService>();
+        using var app = new TestApp(null, s =>
+        {
+            s.AddSingleton<IHubReportBuilder, ThrowingBuilder>();
+            s.AddSingleton<ILogger<GameService>>(log);
+        });
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        HubPlay.Insert(app.Service<Db>(), "bug", Seats(2, seat, Human(seat, Ann), i => Bot(i)), state, creator: Ann);
+        Assert.Equal(200, (await app.Service<GameService>().Move("bug", Ann, HubPlay.Request(5, finishing))).Status);
+        Assert.Equal("finished", Scalar(app, "SELECT status FROM games WHERE id = 'bug'"));
         Assert.Equal(0L, Scalar(app, "SELECT COUNT(*) FROM hub_reports"));
-        var refused = await alice.DeleteAsync($"/api/games/{id}");
+        Assert.Equal(1, log.Count(LogLevel.Error, "could not be built"));
+
+        var refused = await app.Client(Ann).DeleteAsync("/api/games/bug");
         Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
         Assert.Contains("hub-report-pending", await refused.Content.ReadAsStringAsync());
 
-        Exec(app, $"UPDATE games SET bot_key = 'mcts@0123456789ab' WHERE id = '{id}'");
+        // Reconcile uses the real builder (the bug "fixed").
         Assert.Equal(1, HubOutbox.QueueMissing(app.Service<Db>(), null, DateTime.UtcNow.ToString("O"), NullLogger.Instance));
-        Assert.Equal(HttpStatusCode.NoContent, (await alice.DeleteAsync($"/api/games/{id}")).StatusCode);
-        Assert.Equal(1L, Scalar(app, $"SELECT COUNT(*) FROM hub_reports WHERE game_id = '{id}'"));
+        Assert.Equal(HttpStatusCode.NoContent, (await app.Client(Ann).DeleteAsync("/api/games/bug")).StatusCode);
+        Assert.Equal(1L, Scalar(app, "SELECT COUNT(*) FROM hub_reports WHERE game_id = 'bug'"));
     }
 
     [Fact]
@@ -1733,10 +1912,12 @@ public class HubFlowTests
 }
 ```
 
+`ListLogger<T>` is from Task 4's kit, and `ApiResult.Status` is the existing record property. If `HubPlay.Penultimate(2, 7)` ever lands on a forced take (only the floor is legal), `GameService.Move` still accepts it: step 4 checks only the seat and email.
+
 - [ ] **Step 2: Run them and check they fail**
 
 Run: `make test FILTER="FullyQualifiedName~HubFlowTests"`
-Expected: build errors (no `BeforeOutboxInsert` on `IFaultInjector`), or failures (no report row, `BotKey` null).
+Expected: build errors (no `IHubReportBuilder`), or failures (no report row, `BotKey` null).
 
 - [ ] **Step 3: Implement**
 
@@ -1761,33 +1942,39 @@ public sealed class HubSignal
 }
 ```
 
-In `server/AzulServer/Games/GameService.cs`:
-
-1. Add `using AzulServer.Hub;`.
-2. Replace the `IFaultInjector` interface with:
+`server/AzulServer/Hub/HubReportBuilder.cs`:
 
 ```csharp
-public interface IFaultInjector
-{
-    /// Runs right after a commit, before notifications. Tests throw here to
-    /// simulate a crash between the commit and the announcements.
-    void AfterCommit(string gameId);
+using AzulServer.Data;
 
-    /// Runs inside the finishing commit's transaction, after the move is
-    /// written and before the hub report is queued. Tests throw here to prove
-    /// the two commit together or not at all.
-    void BeforeOutboxInsert(string gameId) { }
+namespace AzulServer.Hub;
+
+/// GameService builds reports through this, so a test can make the build
+/// throw for real (spec 10); production uses HubReport.Build unchanged.
+public interface IHubReportBuilder
+{
+    HubBuild Build(GameRecord g, ISet<int> botPlayedSeats, string? publicOrigin);
+}
+
+public sealed class HubReportBuilder : IHubReportBuilder
+{
+    public HubBuild Build(GameRecord g, ISet<int> botPlayedSeats, string? publicOrigin) =>
+        HubReport.Build(g, botPlayedSeats, publicOrigin);
 }
 ```
 
-3. Change the constructor to:
+In `server/AzulServer/Games/GameService.cs`:
+
+1. Add `using AzulServer.Hub;`. `IFaultInjector` is unchanged.
+2. Change the constructor to:
 
 ```csharp
 public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFaultInjector faults,
-    TimeProvider time, ILogger<GameService> log, AzulOptions options, BotIdentity bot, HubSignal hubSignal)
+    TimeProvider time, ILogger<GameService> log, AzulOptions options, BotIdentity bot, HubSignal hubSignal,
+    IHubReportBuilder reports)
 ```
 
-4. In `Start`, replace the returned `Commit` with:
+3. In `Start`, replace the returned `Commit` with:
 
 ```csharp
         return new Commit(g with
@@ -1803,7 +1990,7 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
         });
 ```
 
-5. In `Delete`, right after `if (g.Creator != viewer) return ApiResult.Error(403, "creator-only");`, add:
+4. In `Delete`, right after `if (g.Creator != viewer) return ApiResult.Error(403, "creator-only");`, add:
 
 ```csharp
             // A finished game's rows are the only inputs to its report until
@@ -1812,7 +1999,7 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
                 return ApiResult.Error(409, "hub-report-pending");
 ```
 
-6. In `Mutate`, replace the whole `case Commit commit:` block with:
+5. In `Mutate`, replace the whole `case Commit commit:` block with:
 
 ```csharp
                 case Commit commit:
@@ -1830,11 +2017,8 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
                     {
                         GameStore.Update(c, tx, next, g.Version);
                         if (move is not null) GameStore.InsertMove(c, tx, move);
-                        if (report is not null)
-                        {
-                            faults.BeforeOutboxInsert(id);
-                            HubOutbox.Queue(c, tx, id, report, next.UpdatedAt);
-                        }
+                        // Same transaction: the finish and its report commit together or not at all.
+                        if (report is not null) HubOutbox.Queue(c, tx, id, report, next.UpdatedAt);
                         tx.Commit();
                     }
                     AfterCommit(id, next.Version);
@@ -1842,14 +2026,14 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
                     return ApiResult.Ok(view);
 ```
 
-7. Add this method below `AfterCommit`:
+6. Add this method below `AfterCommit`:
 
 ```csharp
     string? TryBuildReport(SqliteConnection c, GameRecord next, MoveRecord? pending)
     {
         try
         {
-            var built = HubReport.Build(next, HubReport.BotPlayedSeats(c, null, next.Id, pending), options.PublicOrigin);
+            var built = reports.Build(next, HubReport.BotPlayedSeats(c, null, next.Id, pending), options.PublicOrigin);
             if (built.Body is null && next.HubTracked)
                 log.LogError("no hub report for game {Game}: {Reason}", next.Id, built.Skip);
             return built.Body;
@@ -1862,12 +2046,17 @@ public sealed class GameService(Db db, EventHub hub, ServerMoveQueue queue, IFau
     }
 ```
 
-In `server/AzulServer/Program.cs`, after `builder.Services.AddSingleton<IFaultInjector, NoFaults>();`, add `builder.Services.AddSingleton<HubSignal>();`.
+In `server/AzulServer/Program.cs`, after `builder.Services.AddSingleton<IFaultInjector, NoFaults>();`, add:
+
+```csharp
+builder.Services.AddSingleton<HubSignal>();
+builder.Services.AddSingleton<IHubReportBuilder, HubReportBuilder>();
+```
 
 - [ ] **Step 4: Run all server tests**
 
 Run: `make test`
-Expected: PASS. The existing `BotTests` and `SseTests` fault injectors still compile, because the new interface member has a default.
+Expected: PASS. If `AFailedOutboxInsertRollsBackTheFinishingMove` sees no exception, check that `HubOutbox.Queue` uses `ON CONFLICT(game_id) DO NOTHING` and not `INSERT OR IGNORE`.
 
 - [ ] **Step 5: Commit**
 
@@ -1886,7 +2075,7 @@ git commit -m "server: queue the hub report in the finishing commit; Delete wait
 - Test: `server/AzulServer.Tests/Hub/HubSenderTests.cs`
 
 **Interfaces:**
-- Consumes: everything from `HubOutbox`, `HubSignal`, `AzulOptions.Hub`, `AzulOptions.PublicOrigin`.
+- Consumes: everything from `HubOutbox` (outcome writes take the claim's `LeaseId` and return `false` when it is stale), `HubSignal`, `AzulOptions.Hub`, `AzulOptions.PublicOrigin`, and `HubPlay` from Task 6.
 - Produces:
   - `HubSender.HttpName` = `"hub"`
   - `HubSender.Outcome { Sent, Failed, RetryKey, RetryTransient, RetryConfig }`
@@ -1906,6 +2095,7 @@ using AzulServer.Games;
 using AzulServer.Hub;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using static AzulServer.Tests.HubFixtures;
@@ -2125,7 +2315,68 @@ public sealed class HubSenderTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task ARebuildDuringASendWinsOverTheOldOutcome()
+    {
+        using (var c = db.Open())
+        using (var tx = c.BeginTransaction())
+        {
+            GameStore.Insert(c, tx, Finished("g", [Human(0, "alice@example.com"), Bot(1)]));
+            HubOutbox.Queue(c, tx, "g", "{\"old\":1}", Now);
+            tx.Commit();
+        }
+        hubHttp.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sender = Sender();
+        var cycle = sender.RunCycleAsync(default);
+        await WaitUntil(() => hubHttp.Requests.Count == 1);   // the old body is in flight
+        Assert.Equal("{\"old\":1}", hubHttp.Requests[0].Body);
+        Assert.Equal("rebuilt", HubOutbox.Rebuild(db, "g", null, Now));
+        hubHttp.Gate.SetResult();   // the hub now answers 201 to the OLD body
+        await cycle;
+        var row = Row("g");
+        Assert.Equal(("pending", (string?)null), (row.Status, row.LeaseId));
+        Assert.Contains("\"external_id\":\"g\"", row.Body);
+        Assert.Equal(1, log.Count(LogLevel.Information, "stale hub outcome"));
+
+        hubHttp.Gate = null;
+        Assert.Equal(1, await sender.RunCycleAsync(default));   // the new body goes out fresh
+        Assert.Equal(2, hubHttp.Requests.Count);
+        Assert.Contains("\"external_id\":\"g\"", hubHttp.Requests[1].Body);
+        Assert.Equal("sent", Row("g").Status);
+    }
+
     // ---------- through the real app ----------
+
+    [Fact]
+    public async Task ASenderThatCannotReachItsDatabaseDoesNotStopPlay()
+    {
+        var senderLog = new ListLogger<HubSender>();
+        var fake = new FakeHub();
+        var notADirectory = Path.GetTempFileName();   // every Db.Open() below it throws
+        using var app = new TestApp(new AzulOptions { BotWorkers = 0, Hub = Configured }, s =>
+        {
+            s.AddHttpClient(HubSender.HttpName).ConfigurePrimaryHttpMessageHandler(() => fake);
+            s.Remove(s.Single(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(HubSender)));
+            s.AddHostedService(sp => new HubSender(new Db(new AzulOptions { DataDir = notADirectory }),
+                sp.GetRequiredService<AzulOptions>(), sp.GetRequiredService<HubSignal>(),
+                sp.GetRequiredService<IHttpClientFactory>(), TimeProvider.System, senderLog));
+        });
+        const string ann = "ann@example.com";
+        var (state, finishing, seat) = HubPlay.Penultimate(2, seed: 7);
+        var seats = Enumerable.Range(0, 2).Select(i => i == seat ? Human(i, ann) : Bot(i)).ToArray();
+        HubPlay.Insert(app.Service<Db>(), "play", seats, state, creator: ann);
+        var client = app.Client(ann);
+
+        var res = await client.Post("/api/games/play/moves", HubPlay.Body(5, finishing));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        await WaitUntil(() => senderLog.Count(LogLevel.Error, "cycle failed") >= 1);
+        Assert.Equal(Status.Finished, (await Play.Get(client, "play")).Status);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/health")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/games")).StatusCode);
+        using var c = app.Service<Db>().Open();
+        Assert.Equal("pending", HubOutbox.Get(c, null, "play")!.Status);   // queued by the move, waiting
+        Assert.Empty(fake.Requests);
+    }
 
     static TestApp Wired(FakeHub fake, string? dataDir = null) => new(
         new AzulOptions { BotWorkers = 1, MinMoveDelaySeconds = 0, SweepSeconds = 0.2, Hub = Configured },
@@ -2282,18 +2533,29 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
         var outcome = Classify(status);
         var after = time.GetUtcNow();
         using var c2 = db.Open();
+        // Recorded only under this claim's lease: a retry or rebuild while the
+        // request was in flight cleared it, and then this answer is stale.
+        bool owned = outcome switch
+        {
+            Outcome.Sent => HubOutbox.MarkSent(c2, id, claim.LeaseId, status!.Value, Stamp(after)),
+            Outcome.Failed => HubOutbox.MarkFailed(c2, id, claim.LeaseId, status!.Value, Cut(detail)),
+            _ => HubOutbox.MarkRetry(c2, id, claim.LeaseId, status, Cut(detail),
+                Stamp(after + Backoff(claim.Attempts + 1, Random.Shared.NextDouble()))),
+        };
+        if (!owned)
+        {
+            log.LogInformation("stale hub outcome for game {Game} dropped ({Status}): the report was reset or rebuilt meanwhile", id, status);
+            return false;
+        }
         switch (outcome)
         {
             case Outcome.Sent:
-                HubOutbox.MarkSent(c2, id, status!.Value, Stamp(after));
                 log.LogInformation("hub accepted the report of game {Game} ({Status})", id, status);
                 return true;
             case Outcome.Failed:
-                HubOutbox.MarkFailed(c2, id, status!.Value, Cut(detail));
                 log.LogError("hub refused the report of game {Game} permanently ({Status}): {Body}", id, status, Cut(detail));
                 return false;
             default:
-                HubOutbox.MarkRetry(c2, id, status, Cut(detail), Stamp(after + Backoff(claim.Attempts + 1, Random.Shared.NextDouble())));
                 if (outcome == Outcome.RetryKey)
                     log.LogError("hub rejected the game key (401) for game {Game}; reports stay pending until AZUL_HUB_KEY is fixed and the server restarted", id);
                 else if (outcome == Outcome.RetryTransient)
@@ -2405,6 +2667,14 @@ public sealed class HubCommandsTests : IDisposable
         tx.Commit();
     }
 
+    /// Outcomes need the claim's lease (Task 5).
+    void Fail(string id, int status, string error)
+    {
+        using var c = db.Open();
+        var claim = HubOutbox.TryClaim(c, id, "2026-10-04T19:00:00.0000000Z", "2026-10-04T19:05:00.0000000Z")!;
+        Assert.True(HubOutbox.MarkFailed(c, id, claim.LeaseId, status, error));
+    }
+
     [Fact]
     public async Task BotKeyNeedsNoDatabase()
     {
@@ -2417,7 +2687,7 @@ public sealed class HubCommandsTests : IDisposable
     public async Task StatusCountsAndListsFailures()
     {
         Queue("a"); Queue("b");
-        using (var c = db.Open()) HubOutbox.MarkFailed(c, "b", 422, "bad");
+        Fail("b", 422, "bad");
         var (code, o) = await Run("status");
         Assert.Equal(0, code);
         Assert.Equal(1, (int)o["counts"]!["pending"]!);
@@ -2431,7 +2701,8 @@ public sealed class HubCommandsTests : IDisposable
     public async Task RetryOneOrAllFailed()
     {
         Queue("a"); Queue("b");
-        using (var c = db.Open()) { HubOutbox.MarkFailed(c, "a", 409, "x"); HubOutbox.MarkFailed(c, "b", 422, "y"); }
+        Fail("a", 409, "x");
+        Fail("b", 422, "y");
         var (code, one) = await Run("retry", "a");
         Assert.Equal(0, code);
         Assert.Equal("pending", (string?)one["results"]![0]!["outcome"]);
@@ -2606,7 +2877,7 @@ git commit -m "server: AzulServer hub status|retry|ping|bot-key"   # + trailer b
 - Modify: `web/src/lib/api.ts:39`
 - Modify: `web/src/App.svelte`
 - Modify: `web/src/components/Lobby.test.ts:16`
-- Modify: `web/src/lib/events.test.ts:22,44`
+- Modify: `web/src/lib/events.test.ts:22,44,71`
 - Test: `server/AzulServer.Tests/Hub/HubFlowTests.cs` (append)
 - Test (create): `web/src/App.test.ts`
 
@@ -2714,9 +2985,13 @@ Expected: FAIL. `hubUrl` is missing, no links are rendered, and the `mockResolve
   .top a { white-space: nowrap; }
 ```
 
-Update the mocks for the new type:
+Update every successful `api.me` mock for the new type:
 - `web/src/components/Lobby.test.ts:16` → `.mockResolvedValue({ email: 'me@x', hubUrl: null })`;
-- `web/src/lib/events.test.ts:22` and `:44` → `.mockResolvedValue({ email: 'a@x', hubUrl: null })`.
+- `web/src/lib/events.test.ts:22`, `:44` and `:71` → `.mockResolvedValue({ email: 'a@x', hubUrl: null })`.
+
+`:58` (`mockRejectedValue`) and `:91` (`mockReturnValue(new Promise(...))`, which takes its type from the mock) need no change.
+
+Then confirm nothing else mocks it: `grep -rn "spyOn(api, 'me')" web/src web/e2e` must list only these six lines.
 
 - [ ] **Step 4: Run all the tests**
 
@@ -2895,7 +3170,7 @@ Expected: the existing Playwright suite passes.
 
 - [ ] **Step 2: Golden bodies against the hub's real parser**
 
-This needs the playhub CLI branch (`~/playhub-games-cli`, `feat/games-cli`) to have `results validate` implemented. If it is not merged or built yet, record this step as pending in the hand-off and continue.
+**Required. This step blocks completion.** The playhub CLI branch (worktree `~/playhub-games-cli`, `feat/games-cli`) is implemented first. If `npx tsx scripts/hub.ts results validate --help` is not available there, stop and report the dependency as unmet. Do not hand off.
 
 ```bash
 cd ~/playhub-games-cli
@@ -2952,7 +3227,7 @@ Afterwards: `docker rm -f azul-hub-dev`.
 
 Report the following:
 - the test counts;
-- the result of the golden validation, or that it is pending;
+- the golden validation result: every file accepted (anything else means the work is not done);
 - the two MVID keys;
 - the end-to-end result;
 - reminders for the deployer:
@@ -2970,30 +3245,33 @@ Report the following:
 | §3 data model | Task 3 |
 | §4 body: ids, variant, rated rule incl. the pending-move union, timestamps, replay, players, contract normalisation, ranks with tie-break, guards | Tasks 1 and 4 |
 | §5 bot identity, including the MVID, pinning and CI build | Task 2 (Docker side in Task 10, double build in Task 11) |
-| §6.1 atomic queueing with the `BeforeOutboxInsert` fault test; `Delete` refusal | Task 6 |
+| §6.1 atomic queueing (a failing trigger on the real INSERT); a real build exception and reconcile recovery; `Delete` refusal | Task 6 |
 | §6.2 reconcile | Tasks 5 and 7 |
-| §6.3 sender: outcomes, backoff, lease, stuck alert, containment, shutdown, config warnings | Task 7 |
+| §6.3 sender: outcomes, backoff, the lease and lease ownership (`lease_id`), stuck alert, containment (unit and app-level), shutdown, config warnings | Tasks 5 and 7 |
 | §6.4 commands, including rebuild safety and ping | Task 8 |
 | §7 configuration and deployment | Task 10 |
 | §8 links | Task 9 |
-| §10 tests, including the golden bodies via `results validate` | Tasks 4 and 11 |
+| §10 tests, including the golden bodies via `results validate` (required, blocking) | Tasks 4 and 11 |
 | Manual end-to-end | Task 11 |
 
 **Deviations, recorded under File Structure:**
 - reconcile and rebuild use `BEGIN IMMEDIATE` transactions instead of the in-process lock;
 - `Build` takes a `GameRecord`;
-- `hub bot-key` was added.
+- `hub bot-key` was added;
+- the atomicity test forces the failure with a test-only SQLite trigger on `hub_reports`, not an `IFaultInjector` hook. The spec was amended to match.
 
 **Placeholders.** None. The pinned image versions in Task 10 are discovered by the given commands, not invented.
 
 **Type consistency:** the following names are the same everywhere they appear:
 - `HubBuild(Body, Skip)`
-- `HubClaim(Body, Attempts)`
+- `HubClaim(Body, Attempts, LeaseId)`
+- `HubOutbox.MarkSent/MarkFailed/MarkRetry(c, id, leaseId, ...) -> bool`
 - `HubOutbox.Queue(c, tx, id, body, now)`
 - `HubOutbox.QueueMissing(db, origin, now, log)`
 - `HubReport.BotPlayedSeats(c, tx, id, pending)`
 - `HubSender.HttpName`
 - `HubSignal.Wake/WaitAsync`
-- `IFaultInjector.BeforeOutboxInsert`
+- `IHubReportBuilder.Build(g, botPlayedSeats, publicOrigin)`
+- `HubPlay.Penultimate/Insert/Request/Body`
 - `BotIdentity.For(...)` and `BotIdentity.DisplayName`
 - `AzulOptions.Hub.{Url,Key,PublicUrl}`

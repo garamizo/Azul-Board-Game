@@ -86,7 +86,7 @@ New code lives in `server/Hub/`:
 
 | File | Does | Depends on |
 | --- | --- | --- |
-| `Hub/HubReport.cs` | `HubReport.Build(GameRecord g, Game final, ISet<int> seatsBotPlayedForAPerson, HubOptions o) -> JsonObject`: the body, ranks and rated rule. Pure. | `AzulLibrary`, `Projection` |
+| `Hub/HubReport.cs` | `HubReport.Build(GameRecord g, ISet<int> botPlayedSeats, string? publicOrigin) -> HubBuild`: the body, ranks and rated rule, from the record's final snapshot. Pure. `GameService` calls it through `IHubReportBuilder`, a test seam. | `AzulLibrary`, `Projection` |
 | `Hub/BotIdentity.cs` | `BotIdentity.For(AzulOptions) -> (Key, Name)` | `AzulLibrary` assembly |
 | `Hub/HubOutbox.cs` | the table's SQL: `Queue(c, tx, gameId, body)`, `Reconcile`, `ClaimDue`, `Mark*` | `Db` |
 | `Hub/HubSender.cs` | `BackgroundService`; `SendOne(row)`; maps statuses to outcomes | `HubOutbox`, `HttpClient` |
@@ -115,6 +115,7 @@ CREATE TABLE hub_reports(
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT NOT NULL,
   last_status INTEGER, last_error TEXT,
+  lease_id TEXT,                       -- the claim that may record this row's outcome
   created_at TEXT NOT NULL, sent_at TEXT, alerted_at TEXT);
 CREATE INDEX hub_reports_due ON hub_reports(status, next_attempt_at);
 ```
@@ -284,11 +285,25 @@ it logs a warning once.
 **One cycle:**
 
 1. reconcile;
-2. claim due rows one at a time: `UPDATE hub_reports SET next_attempt_at = now + 5 min
-   WHERE game_id = ? AND status = 'pending' AND next_attempt_at <= now`, which takes a
-   lease;
-3. send;
+2. claim due rows one at a time:
+   ```sql
+   UPDATE hub_reports SET next_attempt_at = now + 5 min, lease_id = <fresh random id>
+   WHERE game_id = ? AND status = 'pending' AND next_attempt_at <= now
+   ```
+   This takes a lease;
+3. send, then record the outcome **only under that lease** (lease ownership, below).
 4. wait on a `SemaphoreSlim` or channel wake, with a 60-second timeout.
+
+**Lease ownership.**
+
+- Every outcome write (`sent`, `failed`, or a retry with backoff) is a single
+  `UPDATE ... WHERE game_id = ? AND lease_id = ?` that also clears `lease_id`.
+- If it updates 0 rows, the row was reset or rebuilt while the request was in flight. The
+  stale outcome is logged at information level and dropped.
+- `hub retry` and `hub retry --rebuild` (6.4) clear `lease_id` and set
+  `next_attempt_at = now` in the same statement that resets or replaces the row. This
+  invalidates any in-flight outcome, so an old request's answer can never land on a
+  replaced body. The replaced body is then sent fresh on the next cycle.
 
 **The request.**
 
@@ -338,9 +353,13 @@ JSON document and exits.
   the age of the oldest pending row.
 - **`/app/AzulServer hub retry <game_id>|--all-failed [--rebuild]`** puts rows back to
   `pending`.
-  - With `--rebuild`, the body is rebuilt first, under the game's lock. The stored row is
-    replaced with the fresh body (status `pending`, `attempts = 0`) only if the build
-    succeeds.
+  - The reset is one conditional statement: `status = 'pending'`, `lease_id = NULL` and
+    `next_attempt_at = now`, `WHERE status <> 'sent'`. There is no read-then-update, and it
+    invalidates an in-flight send (6.3, lease ownership).
+  - With `--rebuild`, the body is rebuilt first, inside one SQLite write transaction that
+    reads the game and writes the row. The stored row is replaced with the fresh body only
+    if the build succeeds: status `pending`, `attempts = 0`, `lease_id = NULL`,
+    `next_attempt_at = now`. A `sent` row is never replaced.
   - A row whose game no longer exists is never rebuilt or deleted. It is reported as
     `{"game_id", "skipped": "game deleted"}`, so a report is never lost by a rebuild.
 - **`/app/AzulServer hub ping`** posts `{}` to the configured hub. It exits 0 on 422, which
@@ -426,31 +445,44 @@ JSON document and exits.
     - a null email;
     - an odd name.
 
-    The plan's verification step runs
-    `npx tsx scripts/hub.ts results validate <file>` from `~/playhub` (playhub CLI spec 4.7)
-    on each golden body, and each must be accepted;
+    **Required, not optional:** the plan's final verification runs
+    `npx tsx scripts/hub.ts results validate <file>` on each golden body, from the playhub
+    CLI branch (worktree `~/playhub-games-cli`, playhub CLI spec 4.7, implemented first).
+    The work is not complete until every body is accepted;
   - `replay_url` is null when `PublicOrigin` is unset.
 - **`BotIdentityTests`:**
   - the key is stable for the same options;
   - changing the think seconds, the rollout cap or the brain revision changes it;
   - the key matches the hub's `bot_key` regex.
-- **`HubOutboxTests`** (through the API with `GreedyBrain`, as existing tests do):
-  - a game finished by a human move queues one row;
-  - a game finished by a bot move queues one row;
-  - atomicity, tested with a new `IFaultInjector.BeforeOutboxInsert(gameId)` hook, called
-    inside the transaction after `InsertMove` and before `HubOutbox.Queue`. An injected
-    fault there must leave **neither** the finishing move nor the report committed. The
-    game is still at its previous version, and the move can be retried. A test passing on
-    two separate transactions would fail this check;
-  - a hand-over to the bot just before the finishing wall turn makes the match unrated;
-  - `Delete` of a finished game without a report answers 409, and with a report succeeds;
-  - a build exception leaves the move committed and the row missing, and reconcile then
-    queues it;
+- **`HubOutboxTests` / `HubFlowTests`.** These run against the API and `GameService`, from
+  deterministic penultimate states: a seeded greedy game stopped one move before its end and
+  inserted directly.
+  - A game finished by a human move queues one row, and so does one finished by a bot
+    move.
+  - **Atomicity.** The failure is forced at the actual outbox INSERT: a test-only SQLite
+    trigger on `hub_reports` raises `ABORT`. The finishing move must then leave the game's
+    exact previous version and move count unchanged, with no report. With the trigger
+    dropped, retrying the same move gives exactly one finishing commit and one report.
+  - **The pending-move union.** A bot finishes the game for a person's seat that has no
+    earlier bot move (handed over just before). The match must be unrated. This test fails
+    if the finishing move is left out of `BotPlayedSeats`.
+  - **The human-finishing path.** A person's finishing move keeps the match rated, unless a
+    stored bot move exists for another person's seat.
+  - `Delete` of a finished game without a report answers 409, and succeeds once the report
+    exists.
+  - **A real build exception.** An injected `IHubReportBuilder` throws. The move stays
+    committed with no row, and reconcile then queues the report.
   - a pre-existing game (`hub_tracked = 0`) queues nothing;
   - `Delete` leaves the report in place.
 - **`HubSenderTests`** (fake `HttpMessageHandler`):
   - every outcome row in 6.3;
   - backoff, and the lease;
+  - **lease ownership:** a send blocked in a fake handler while `--rebuild` replaces the
+    body. When the handler then answers 2xx, the row stays `pending` with the new body, and
+    the next cycle sends that body;
+  - **an application-level containment test:** the sender's own database access fails on
+    every cycle while a finishing move is committed through the API. The move commits, the
+    report is queued, and the server keeps serving;
   - the stored body is sent byte-for-byte, with `Content-Type: application/json` and the
     bearer header;
   - the sender stays off without configuration;
