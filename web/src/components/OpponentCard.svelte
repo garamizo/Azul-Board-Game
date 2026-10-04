@@ -14,7 +14,7 @@
   };
 </script>
 
-<button class="card" class:active onclick={onOpen} aria-label={`${name}'s board, ${player.score} points`}>
+<button class="card" class:active class:glow={active} onclick={onOpen} aria-label={`${name}'s board, ${player.score} points`}>
   <span class="head">
     <span class="name truncate">{name}</span>
     {#if player.hasFirst}<span class="marker" title="first player">1</span>{/if}

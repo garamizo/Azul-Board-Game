@@ -2,6 +2,7 @@
   import type { GameView } from '../lib/types';
   import { seatName } from '../lib/names';
   import { sounds, soundState } from '../lib/sound.svelte';
+  import ScoreChip from './ScoreChip.svelte';
 
   let { view }: { view: GameView } = $props();
   const board = $derived(view.board!);
@@ -22,7 +23,7 @@
   {/if}
   <span class="scores">
     {#each board.players as p, i}
-      <span class="score truncate" class:active={i === board.activeSeat}>{seatName(view, i)} {p.score}</span>
+      <ScoreChip name={seatName(view, i)} score={p.score} active={i === board.activeSeat && view.status === 'playing'} />
     {/each}
   </span>
   <button class="mute" onclick={() => sounds.toggle()} aria-label={soundState.muted ? 'Unmute' : 'Mute'}>
@@ -33,8 +34,6 @@
 <style>
   .status { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 0; min-width: 0; }
   .scores { display: flex; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
-  .score { max-width: 12em; color: var(--muted); font-family: var(--display); }
-  .score.active { color: var(--fg); font-weight: 700; }
   .pill { background: var(--accent); color: var(--accent-ink); padding: 4px 12px; border-radius: 999px;
     animation: pill-in 600ms ease-out; }
   @keyframes pill-in { 0% { transform: scale(0.85); opacity: 0; } 60% { transform: scale(1.05); opacity: 1; } }

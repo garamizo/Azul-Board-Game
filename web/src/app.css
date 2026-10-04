@@ -34,6 +34,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .banner { padding: 8px 12px; border-radius: 8px; background: var(--warn-bg); margin: 8px 0; }
 .banner.error { background: var(--error-bg); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.glow { animation: glow 2s ease-in-out infinite alternate; }
+@keyframes glow { from { box-shadow: var(--shadow); } to { box-shadow: 0 0 14px 3px var(--glow); } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

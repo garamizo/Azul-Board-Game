@@ -2,6 +2,8 @@
   import type { PlayerView, WallRowView } from '../lib/types';
   import { FLOOR_BOX, floorCell, floorDisplay, lineBox, lineCell, tileAt, tileHref, wallBox, wallCell } from '../lib/geometry';
   import { wallTargets, type Arrivals, type WallSel } from '../lib/selection';
+  import { Tween } from 'svelte/motion';
+  import { reducedMotion } from '../lib/motion';
 
   interface Props {
     player: PlayerView;
@@ -21,6 +23,7 @@
         pulseRow = null, onRow, onWallCell, seat = undefined, arriving = null }: Props = $props();
 
   const rows = [0, 1, 2, 3, 4];
+  const shownScore = Tween.of(() => player.score, { duration: reducedMotion() ? 0 : 400 });
   const floor = $derived(floorDisplay(player.floor, player.hasFirst));
   const ghostFloor = $derived(ghost ? ghost.overflow : 0);
   const key = (fn: () => void) => (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); } };
@@ -29,7 +32,7 @@
 
 <svg viewBox="0 0 900 600" class="board" role="group" aria-label={`${name}'s board`}>
   <image href="/assets/sprites/board2.png" width="900" height="600" />
-  <text x="20" y="48" class="label">{name}: {player.score}</text>
+  <text x="20" y="48" class="label">{name}: {Math.round(shownScore.current)}</text>
   {#if seat !== undefined}
     {#each rows as row}
       {@const box = lineBox(row)}

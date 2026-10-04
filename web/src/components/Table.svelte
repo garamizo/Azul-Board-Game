@@ -107,7 +107,7 @@
   </section>
 
   {#if mySeat !== null}
-    <section class="mine panel" class:shake aria-label="your board">
+    <section class="mine panel" class:shake class:glow={mySeat === board.activeSeat && view.status === 'playing'} aria-label="your board">
       <PlayerBoard player={board.players[mySeat]} name={seatName(view, mySeat)} seat={mySeat} arriving={landing(mySeat)}
         interactive={!!legal}
         legalRows={legal && takeSel ? legalRows(legal, takeSel.source) : []}
@@ -134,7 +134,7 @@
   <section class="others" aria-label="other players">
     <div class="others-desktop">
       {#each others as i}
-        <div class="panel opp"><PlayerBoard player={board.players[i]} name={seatName(view, i)} seat={i} arriving={landing(i)} pulseRow={pulse(i)} /></div>
+        <div class="panel opp" class:glow={i === board.activeSeat && view.status === 'playing'}><PlayerBoard player={board.players[i]} name={seatName(view, i)} seat={i} arriving={landing(i)} pulseRow={pulse(i)} /></div>
       {/each}
     </div>
     <div class="others-phone">
