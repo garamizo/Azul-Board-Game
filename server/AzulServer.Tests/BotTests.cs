@@ -106,6 +106,41 @@ public class BotTests
         await Play.WaitFor(alice, g.Id, x => x.Board!.ActiveSeat == 0 && x.Version >= v.Version + 2);
     }
 
+    /// Blocks (until cancelled) on its first call only.
+    sealed class FirstCallBlocksBrain : IBotBrain
+    {
+        int calls;
+        public readonly SemaphoreSlim Started = new(0);
+        public Move ChooseMove(Game game, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                Started.Release();
+                ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(10));
+            }
+            return game.GetGreedyMove();
+        }
+    }
+
+    [Fact]
+    public async Task PokeDuringASearchIsNotLost()
+    {
+        var brain = new FirstCallBlocksBrain();
+        using var app = new TestApp(new AzulOptions { BotWorkers = 2, MinMoveDelaySeconds = 0, SweepSeconds = 30 },
+            s => s.AddSingleton<IBotBrain>(brain));
+        var alice = app.Client("alice@x.com");
+        var bob = app.Client("bob@x.com");
+        var id = await Play.Started(3, alice, bob);
+        var v = await Play.Get(alice, id);
+        await alice.Post($"/api/games/{id}/moves", Play.AnyLegal(v));
+        await bob.Post($"/api/games/{id}/seats/1/to-bot");
+        Assert.True(await brain.Started.WaitAsync(TimeSpan.FromSeconds(10)), "bot never started thinking");
+        // Another commit while the bot thinks: cancels the search and pokes.
+        await alice.Post($"/api/games/{id}/seats/0/to-bot");
+        // Must not wait for the 30 s sweep.
+        await Play.WaitFor(alice, id, x => x.Board!.ActiveSeat != 1 || x.Status == Status.Finished, 3);
+    }
+
     [Fact]
     public async Task EveryGameKeepsMovingWithOneWorker()
     {

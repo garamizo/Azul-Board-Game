@@ -71,9 +71,10 @@ public sealed class BotScheduler(ServerMoveQueue queue, GameService games, IBotB
             try { id = await queue.TakeAsync(ct); }
             catch (OperationCanceledException) { return; }
             if (!queue.TryStart(id)) continue;
+            bool hadTurn = false;
             try
             {
-                await PlayOne(id, ct);
+                hadTurn = await PlayOne(id, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -87,14 +88,17 @@ public sealed class BotScheduler(ServerMoveQueue queue, GameService games, IBotB
             finally
             {
                 queue.Finish(id);
+                // A poke taken while this game was active was skipped; look
+                // again. Bounded: the next pass plays a move or finds no turn.
+                if (hadTurn && !ct.IsCancellationRequested) queue.Poke(id);
             }
         }
     }
 
-    async Task PlayOne(string id, CancellationToken ct)
+    async Task<bool> PlayOne(string id, CancellationToken ct)
     {
         var turn = games.GetServerTurn(id);
-        if (turn is null) return;
+        if (turn is null) return false;
         var clock = Stopwatch.StartNew();
         Move move;
         if (turn.Forced is { } forced)
@@ -110,5 +114,6 @@ public sealed class BotScheduler(ServerMoveQueue queue, GameService games, IBotB
         var wait = TimeSpan.FromSeconds(options.MinMoveDelaySeconds) - clock.Elapsed;
         if (wait > TimeSpan.Zero) await Task.Delay(wait, ct);
         await games.ApplyServerMove(id, turn.Version, move, turn.Actor);  // 409 = something changed; dropped
+        return true;
     }
 }
