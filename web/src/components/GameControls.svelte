@@ -36,5 +36,6 @@
 
 <style>
   .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .controls button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .danger { color: var(--danger); }
 </style>
