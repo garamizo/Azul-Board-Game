@@ -8,20 +8,23 @@
   import SeatPanel from './SeatPanel.svelte';
   import Table from './Table.svelte';
   import GameControls from './GameControls.svelte';
+  import Toasts from './Toasts.svelte';
+  import { narrate } from '../lib/narrate';
+  import { clearToasts, toast } from '../lib/toasts.svelte';
 
   let { id }: { id: string } = $props();
   let view = $state<GameView | null>(null);
   let link = $state<'connecting' | LinkStatus>('connecting');
-  let notice = $state('');
   let error = $state('');
+  // Set on unmount: a request still in flight must not write a bubble into the
+  // next page or navigate away from it.
+  let disposed = false;
 
   function accept(next: GameView) {
+    if (disposed) return;
     const prev = view;
     if (prev && next.version <= prev.version) return;
     view = next;
-    // A newer board supersedes "The board changed" (failed() sets it again
-    // right after accepting the 409's view).
-    notice = '';
     if (!prev) return;
     const last = next.lastMove;
     if (last && last.version === next.version && last.seat !== next.you.seat)
@@ -31,12 +34,14 @@
       if (next.you.seat !== null)  // spectators neither win nor lose
         sounds.play(next.result?.winners.includes(next.you.seat) ? 'win' : 'lose');
     } else if (next.board && prev.board && next.board.round > prev.board.round) sounds.play('score');
+    for (const n of narrate(prev, next)) toast(n);
   }
 
   function failed(e: unknown) {
+    if (disposed) return;
     if (e instanceof ApiError && e.status === 409 && e.body?.view) {
       accept(e.body.view);
-      notice = 'The board changed';
+      toast('The board changed', 'warn');
     } else if (e instanceof ApiError && e.status === 404) {
       navigate('/', 'This game was deleted');
     } else {
@@ -60,7 +65,6 @@
     try {
       accept(await api.move(id, body));
       error = '';
-      notice = '';
       return 'ok';
     } catch (e) {
       failed(e);
@@ -68,11 +72,15 @@
     }
   }
 
-  onMount(() => subscribe(id, {
-    state: accept,
-    deleted: () => navigate('/', 'This game was deleted'),
-    status: (s) => (link = s),
-  }));
+  onMount(() => {
+    const unsubscribe = subscribe(id, {
+      state: accept,
+      deleted: () => navigate('/', 'This game was deleted'),
+      status: (s) => (link = s),
+    });
+    // Bubbles belong to this game: none follow you to the lobby or another game.
+    return () => { disposed = true; unsubscribe(); clearToasts(); };
+  });
 
   $effect(() => {
     const yours = !!view?.legal;
@@ -86,8 +94,8 @@
 
 {#if link === 'reconnecting'}<div class="banner">Reconnecting…</div>{/if}
 {#if link === 'signed-out'}<div class="banner error">Signed out. Reload the page to sign in again.</div>{/if}
-{#if notice}<div class="banner">{notice}</div>{/if}
 {#if error}<div class="banner error">{error}</div>{/if}
+<Toasts />
 
 {#if !view}
   <p>Loading…</p>

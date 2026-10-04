@@ -12,6 +12,7 @@ vi.mock('../lib/events', () => ({
 import GamePage from './GamePage.svelte';
 import { api, ApiError } from '../lib/api';
 import { sounds } from '../lib/sound.svelte';
+import { clearToasts, toasts } from '../lib/toasts.svelte';
 
 function playing(version: number, seat: number | null): GameView {
   const empty = [-1, -1, -1, -1, -1];
@@ -34,24 +35,67 @@ function finished(version: number, seat: number | null, winners: number[]): Game
   return { ...playing(version, seat), status: 'finished', legal: null, result: { scores: [10, 5], winners, reason: 'normal' } };
 }
 
-afterEach(() => { vi.restoreAllMocks(); live.on = null; });
+afterEach(() => { vi.restoreAllMocks(); live.on = null; clearToasts(); });
 
 describe('GamePage', () => {
-  it('"The board changed" goes away once a newer version arrives', async () => {
+  it('a 409 shows "The board changed" as one warning bubble, not a banner', async () => {
     vi.spyOn(api, 'move').mockRejectedValue(new ApiError(409, { error: 'stale', view: playing(8, 0) }));
-    const { container, getByRole, queryByText } = render(GamePage, { id: 'abcdefghij' });
+    const { container, getByRole, queryAllByText } = render(GamePage, { id: 'abcdefghij' });
     live.on!.state(playing(7, 0));
     await tick();
     await fireEvent.click(container.querySelector('[data-factory="0"][data-color="1"]')!);
     await fireEvent.click(container.querySelector('[data-row="0"]')!);
     await fireEvent.click(getByRole('button', { name: 'Confirm' }));
-    await vi.waitFor(() => expect(queryByText('The board changed')).not.toBeNull());
-    live.on!.state(playing(8, 0));  // not newer: the notice stays
+    await vi.waitFor(() => expect(queryAllByText('The board changed')).toHaveLength(1));
+    live.on!.state(playing(8, 0));  // not newer: no second bubble
     await tick();
-    expect(queryByText('The board changed')).not.toBeNull();
-    live.on!.state(playing(9, 0));
+    expect(queryAllByText('The board changed')).toHaveLength(1);
+    expect(container.querySelector('.banner')).toBeNull();
+  });
+
+  it("an opponent's move becomes a bubble; your own does not", async () => {
+    const { findAllByTestId, queryAllByTestId } = render(GamePage, { id: 'abcdefghij' });
+    live.on!.state(playing(7, 0));
+    const bot = playing(8, 0);
+    bot.lastMove = { version: 8, seat: 1, kind: 'take', factory: 2, color: 2, row: 3, tiles: 4, columns: null };
+    live.on!.state(bot);
+    const bubbles = await findAllByTestId('toast');
+    expect(bubbles[0].textContent).toContain('Bot 2');
+    expect(bubbles[0].textContent).toContain('took 4 red from factory 3 → line 4');
+    const mine = playing(9, 0);
+    mine.lastMove = { version: 9, seat: 0, kind: 'take', factory: 0, color: 1, row: 0, tiles: 2, columns: null };
+    live.on!.state(mine);
     await tick();
-    expect(queryByText('The board changed')).toBeNull();
+    expect(queryAllByTestId('toast')).toHaveLength(1);
+  });
+
+  it('a move answered after you left the page adds no bubble', async () => {
+    let reject!: (e: unknown) => void;
+    vi.spyOn(api, 'move').mockReturnValue(new Promise((_, r) => { reject = r; }));
+    const { container, getByRole, unmount } = render(GamePage, { id: 'abcdefghij' });
+    live.on!.state(playing(7, 0));
+    await tick();
+    await fireEvent.click(container.querySelector('[data-factory="0"][data-color="1"]')!);
+    await fireEvent.click(container.querySelector('[data-row="0"]')!);
+    await fireEvent.click(getByRole('button', { name: 'Confirm' }));
+    unmount();
+    reject(new ApiError(409, { error: 'stale', view: playing(8, 0) }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(toasts.items).toHaveLength(0);
+  });
+
+  it('at most three bubbles stand at once, newest last', async () => {
+    const { queryAllByTestId } = render(GamePage, { id: 'abcdefghij' });
+    live.on!.state(playing(7, 0));
+    for (let v = 8; v <= 12; v++) {
+      const next = playing(v, 0);
+      next.lastMove = { version: v, seat: 1, kind: 'take', factory: 0, color: v % 5, row: 5, tiles: v, columns: null };
+      live.on!.state(next);
+    }
+    await tick();
+    const shown = queryAllByTestId('toast');
+    expect(shown).toHaveLength(3);
+    expect(shown[2].textContent).toContain('took 12');
   });
 
   it('spectators hear no win or lose sound; players do', async () => {
