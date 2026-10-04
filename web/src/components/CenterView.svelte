@@ -36,4 +36,5 @@
   .group img { width: 32px; height: 32px; }
   .group.selected { border-color: #1f5fa8; box-shadow: 0 0 0 2px #1f5fa8; }
   .muted { color: var(--muted); }
+  @media (min-width: 900px) { .group img { width: 44px; height: 44px; } }
 </style>

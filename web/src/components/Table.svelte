@@ -42,7 +42,6 @@
   const ready = $derived(
     !!legal && (takeMove(sel) !== null || (!!wallSel && !!legal.wall && wallComplete(wallSel, legal.wall))));
   const others = $derived(board.players.map((_, i) => i).filter((i) => i !== mySeat));
-  const piles = $derived([{ label: 'Bag', counts: board.bag }, { label: 'Discard', counts: board.discard }]);
   const pulse = (seat: number) =>
     view.lastMove && view.lastMove.version === view.version && view.lastMove.seat === seat && view.lastMove.kind === 'take'
       ? view.lastMove.row : null;
@@ -89,11 +88,9 @@
       selectedColor={takeSel?.source?.factory === centre ? takeSel.source.color : null}
       canPick={(c) => !!legal && canPick(legal, centre, c)} onPick={(c) => pick(centre, c)} />
     <div class="supply" data-testid="supply">
-      {#each piles as pile}
-        <span class="pile"><span>{pile.label}</span>{' '}
-          {#each pile.counts as n, c}<span class="count"><img src={tileHref(c)} alt={COLOR_NAMES[c]} />{n}</span>{' '}{/each}
-        </span>
-      {/each}
+      <span class="pile"><span>Discard</span>{' '}
+        {#each board.discard as n, c}<span class="count"><img src={tileHref(c)} alt={COLOR_NAMES[c]} />{n}</span>{' '}{/each}
+      </span>
     </div>
   </section>
 
@@ -174,7 +171,9 @@
     .mine { grid-area: mine; }
     .others { grid-area: others; }
     .result { grid-area: result; }
-    .others-desktop { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .factories { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+    /* Always three slots, so an opponent's board is the same size at any player count. */
+    .others-desktop { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
     .others-phone { display: none; }
   }
 </style>

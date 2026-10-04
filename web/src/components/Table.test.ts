@@ -48,14 +48,15 @@ describe('Table', () => {
     release();
   });
 
-  it('shows bag and discard counts', () => {
+  it('shows discard counts but not the bag', () => {
     const v = myTurn();
     v.board!.bag = [12, 10, 9, 14, 11];
     v.board!.discard = [0, 1, 0, 0, 2];
     const { getByTestId } = render(Table, { view: v, send: vi.fn() });
     const text = getByTestId('supply').textContent!.replace(/\s+/g, ' ');
-    expect(text).toContain('Bag 12 10 9 14 11');
     expect(text).toContain('Discard 0 1 0 0 2');
+    expect(text).not.toContain('Bag');
+    expect(text).not.toContain('12');
   });
 
   it('a forced turn shows the auto-play step, not Your turn or Confirm', () => {
