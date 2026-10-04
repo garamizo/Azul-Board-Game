@@ -157,7 +157,7 @@ public sealed class MoveTests : IDisposable
         Assert.Equal(new[] { HttpStatusCode.OK, HttpStatusCode.Conflict }, results.Select(r => r.StatusCode).Order());
     }
 
-    [Fact(Skip = "needs BotScheduler (Task 14)")]
+    [Fact]
     public async Task FinishedGameAcceptsOnlyRetries()
     {
         // alice vs greedy bot, with bots on and no delay.

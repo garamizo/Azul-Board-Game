@@ -21,6 +21,8 @@ builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<ServerMoveQueue>();
 builder.Services.AddSingleton<IFaultInjector, NoFaults>();
 builder.Services.AddSingleton<GameService>();
+builder.Services.AddSingleton<IBotBrain, MctsBrain>();
+builder.Services.AddHostedService<BotScheduler>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<AzulOptions>();  // fail fast on bad configuration
