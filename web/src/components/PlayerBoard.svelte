@@ -1,0 +1,101 @@
+<script lang="ts">
+  import type { PlayerView, WallRowView } from '../lib/types';
+  import { FLOOR_BOX, floorCell, floorDisplay, lineBox, lineCell, tileAt, tileHref, wallBox, wallCell } from '../lib/geometry';
+  import { wallTargets, type WallSel } from '../lib/selection';
+
+  interface Props {
+    player: PlayerView;
+    name: string;
+    interactive?: boolean;
+    legalRows?: number[];
+    ghost?: { row: number; color: number; placed: number; overflow: number } | null;
+    wall?: (WallRowView | null)[] | null;
+    wallSel?: WallSel | null;
+    pulseRow?: number | null;
+    onRow?: (row: number) => void;
+    onWallCell?: (row: number, col: number) => void;
+  }
+  let { player, name, interactive = false, legalRows = [], ghost = null, wall = null, wallSel = null,
+        pulseRow = null, onRow, onWallCell }: Props = $props();
+
+  const rows = [0, 1, 2, 3, 4];
+  const floor = $derived(floorDisplay(player.floor, player.hasFirst));
+  const ghostFloor = $derived(ghost ? ghost.overflow : 0);
+  const key = (fn: () => void) => (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); } };
+  const targets = (row: number) => (wall && wallSel ? wallTargets(wall, wallSel, row) : []);
+</script>
+
+<svg viewBox="0 0 900 600" class="board" role="group" aria-label={`${name}'s board`}>
+  <image href="/assets/sprites/board2.png" width="900" height="600" />
+  <text x="20" y="48" class="label">{name}: {player.score}</text>
+
+  {#each rows as row}
+    {@const line = player.lines[row]}
+    {@const box = lineBox(row)}
+    {#if line}
+      {#each Array(line[1]) as _, i}
+        <image class="tile line" href={tileHref(line[0])} {...tileAt(lineCell(row, i))} />
+      {/each}
+    {/if}
+    {#if ghost && ghost.row === row}
+      {#each Array(ghost.placed) as _, i}
+        <image class="tile ghost" href={tileHref(ghost.color)} {...tileAt(lineCell(row, (line?.[1] ?? 0) + i))} />
+      {/each}
+    {/if}
+    {#if interactive}
+      <rect class="hit" class:legal={legalRows.includes(row)} class:chosen={ghost?.row === row} class:pulse={pulseRow === row}
+        data-row={row} x={box.x} y={box.y} width={box.w} height={box.h} rx="8"
+        role="button" tabindex="0" aria-label={`pattern line ${row + 1}`}
+        onclick={() => onRow?.(row)} onkeydown={key(() => onRow?.(row))} />
+    {:else if pulseRow === row}
+      <rect class="hit pulse" x={box.x} y={box.y} width={box.w} height={box.h} rx="8" />
+    {/if}
+  {/each}
+
+  {#each rows as row}
+    {#each rows as col}
+      {@const cell = player.wall[row][col]}
+      {#if cell >= 0}
+        <image class="tile wall" href={tileHref(cell)} {...tileAt(wallCell(row, col))} />
+      {:else if wallSel && wall?.[row] && wallSel.columns[row] === col}
+        <image class="tile ghost" href={tileHref(wall[row]!.color)} {...tileAt(wallCell(row, col))} />
+      {/if}
+      {#if interactive && targets(row).includes(col)}
+        {@const b = wallBox(row, col)}
+        <rect class="hit target" class:chosen={wallSel?.columns[row] === col}
+          data-wall-row={row} data-wall-col={col} x={b.x} y={b.y} width={b.w} height={b.h} rx="8"
+          role="button" tabindex="0" aria-label={`wall row ${row + 1} column ${col + 1}`}
+          onclick={() => onWallCell?.(row, col)} onkeydown={key(() => onWallCell?.(row, col))} />
+      {/if}
+    {/each}
+  {/each}
+
+  {#each floor.tiles as color, i}
+    <image class="tile floor" href={tileHref(color)} {...tileAt(floorCell(i))} />
+  {/each}
+  {#if floor.extra > 0}
+    <text x="660" y="565" class="extra">+{floor.extra}</text>
+  {/if}
+  {#if ghost && ghostFloor > 0}
+    <text x="660" y="530" class="ghost-count">+{ghostFloor} to floor</text>
+  {/if}
+  {#if interactive}
+    <rect class="hit" class:legal={legalRows.includes(5)} class:chosen={ghost?.row === 5}
+      data-row="5" x={FLOOR_BOX.x} y={FLOOR_BOX.y} width={FLOOR_BOX.w} height={FLOOR_BOX.h} rx="8"
+      role="button" tabindex="0" aria-label="floor"
+      onclick={() => onRow?.(5)} onkeydown={key(() => onRow?.(5))} />
+  {/if}
+</svg>
+
+<style>
+  .board { width: 100%; height: auto; display: block; user-select: none; }
+  .label { font-size: 40px; font-weight: 700; fill: #2b2118; paint-order: stroke; stroke: #f6efe4; stroke-width: 6px; }
+  .extra, .ghost-count { font-size: 34px; font-weight: 700; fill: #a8321f; }
+  .ghost { opacity: 0.5; }
+  .hit { fill: transparent; stroke: transparent; stroke-width: 6; cursor: default; }
+  .hit.legal { stroke: #1f5fa8; stroke-dasharray: 12 8; cursor: pointer; }
+  .hit.target { stroke: #1f5fa8; stroke-dasharray: 12 8; cursor: pointer; }
+  .hit.chosen { stroke: #1f5fa8; stroke-dasharray: none; fill: rgba(31, 95, 168, 0.12); }
+  .hit.pulse { animation: pulse 600ms ease-out; }
+  @keyframes pulse { from { fill: rgba(255, 196, 0, 0.55); } to { fill: transparent; } }
+</style>
