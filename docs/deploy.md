@@ -73,12 +73,18 @@ Catan. No restart. Removing someone takes effect when their Access session (24 h
 
 - Deploy a change: `git pull && make serve` (games survive; bots resume).
 - Backup: `make backup` (files in `~/backups/azul`). Restore: `make restore FILE=...`.
-- Rotate the tunnel token: see
-  [Tunnel permissions](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/)
-  for getting the token (**Networking** > **Tunnels**, select the tunnel, **Overview** tab,
-  **Add a replica** to reveal the command; copy it without running it, the token is the `eyJ...`
-  string); update `CLOUDFLARE_TUNNEL_TOKEN` in `.env.serve`, then `make serve`. For revoking the
-  old token, find it from the linked page.
+- Rotate the tunnel token
+  ([docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/#rotate-a-token-without-service-disruption)):
+  go to **Networking** > **Tunnels**, select the tunnel, and on the **Overview** tab select
+  **Refresh token**. Copy the new token from the installation command it shows (do not run the
+  command; the token is the `eyJ...` string). Put it in `CLOUDFLARE_TUNNEL_TOKEN` in `.env.serve`
+  without printing it (for example `$EDITOR .env.serve`), then `make serve`. After the refresh,
+  `cloudflared` can no longer open new connections with the old token, but existing connectors keep
+  running and the tunnel keeps serving, so the running connector stays up until `make serve`
+  replaces it. The page's no-disruption rotation assumes at least two replicas; with one connector
+  expect a brief gap while it restarts. If the token leaked, follow
+  [Rotate a compromised token](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/#rotate-a-compromised-token)
+  (it also deletes the existing connections).
 - Move to another machine (never run both at once: two connectors would split players between
   two databases): here `make serve-down`, then `make backup` (the backup container reads the
   stopped stack's volume directly). Copy `.env.serve` and the backup to the new machine; there
