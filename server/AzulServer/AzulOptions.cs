@@ -1,4 +1,5 @@
 using System.Globalization;
+using AzulServer.Hub;
 
 namespace AzulServer;
 
@@ -15,6 +16,7 @@ public sealed record AzulOptions
     public double SweepSeconds { get; init; } = 30;
     public double SseHeartbeatSeconds { get; init; } = 20;
     public double SseMaxMinutes { get; init; } = 30;
+    public HubOptions Hub { get; init; } = new();
 
     /// No Access configuration: identity comes from X-Dev-User / azul_dev_user.
     public bool DevMode => TeamDomain is null;
@@ -48,6 +50,12 @@ public sealed record AzulOptions
             SweepSeconds = Num("AZUL_SWEEP_SECONDS", 30),
             SseHeartbeatSeconds = Num("AZUL_SSE_HEARTBEAT_SECONDS", 20),
             SseMaxMinutes = Num("AZUL_SSE_MAX_MINUTES", 30),
+            Hub = new HubOptions
+            {
+                Url = Get("AZUL_HUB_URL")?.TrimEnd('/'),
+                Key = Get("AZUL_HUB_KEY"),
+                PublicUrl = Get("AZUL_HUB_PUBLIC_URL")?.TrimEnd('/'),
+            },
         };
     }
 }
