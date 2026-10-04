@@ -20,8 +20,9 @@ What the user asked for (2026-10-04):
 
 Assumptions (not stated by the user; open to correction at spec review):
 
-- Bubbles narrate **other players'** moves only (and round changes); your own moves are not
-  narrated, since you just made them. Spectators get every seat.
+- Bubbles narrate other players' moves and round changes. Moves on **your own seat** are narrated
+  only when you did not make them by hand: a forced turn the server played for you, or a bot that
+  has taken over your seat (§4.1). Spectators get every seat.
 - The round table (B) is used only where the market is wide enough for it (≈ 1120 px viewport and
   up, §6). A phone ring of 9 factories would be a ~340 px square of small factories above your
   board; narrower screens keep the factory grid with the centre as a felt panel.
@@ -69,9 +70,10 @@ bag": no `supply` test id, no text matching `/discard|bag/i`.
   colour that belongs there at ~20 % opacity, like the printed board. The layout, read off
   `board2.png` with colours 0–4 = blue, yellow, red, black, white: `colour(r, c) = (c − r + 5) % 5`.
 - **Floor**: `floorDisplay(player.floor, player.hasFirst)` (existing helper, FIRST marker first),
-  7 slots; `+n` after the slots when `extra > 0`; then the penalty, e.g. `−2`, computed by a new
-  helper `floorPenalty(n)` in `lib/geometry.ts` from the printed values −1 −1 −2 −2 −2 −3 −3
-  (slots beyond 7 count −3 each; the engine caps the score at 0, and the card does not need to).
+  7 slots; `+n` after the slots when `extra > 0`; then the penalty, e.g. `−2`, from a new helper
+  `floorPenalty(n)` in `lib/geometry.ts`, where `n = floor.length + (hasFirst ? 1 : 0)` — the
+  engine's `floor.Sum()`, which counts the marker. Values mirror `FloorToScore`
+  (`AzulLibrary/Logic.cs`): 0, −1, −2, −4, −6, −8, −11, and −14 for 7 or more. No text at 0.
 - **Colours** come from one table `TILE_COLORS` in `lib/geometry.ts`, also used by the toasts and
   the theme; the FIRST marker draws as a white square with a dark "1".
 - **Active seat**: the existing accent ring, plus the glow from §7.3.
@@ -83,35 +85,56 @@ bag": no `supply` test id, no text matching `/discard|bag/i`.
 ### 4.1 Narration — `web/src/lib/narrate.ts` (pure)
 
 ```ts
-export function narrate(prev: GameView, next: GameView): string[]
+export interface Narration { who: string | null; text: string; color?: number }
+export function narrate(prev: GameView, next: GameView): Narration[]
 ```
 
-Returns zero or more lines for the change from `prev` to `next`, in this order:
+Returns zero or more bubbles for the change from `prev` to `next`, in this order. `who` is the
+player name, kept apart from `text` so the bubble can truncate a long name without losing the
+move (§4.3); `color` is the taken tile colour, for the bubble's colour dot.
 
-1. **The move**, when `next.lastMove` exists, `lastMove.version === next.version`, and
-   `lastMove.seat !== next.you.seat` (spectators: `you.seat` is null, so every seat).
-   Name: `seatName(next, seat)`.
-   - take, `color === 5`: `"<name> took the first-player marker"`.
-   - take, other colours: `"<name> took <tiles> <colour> from factory <factory + 1> → line <row +
-     1>"`; from the centre (`factory === prev.board.factories.length`): `"… from the centre"`;
-     `row === 5`: `"… → floor"`. If `prev.board.centerHasFirst && !next.board.centerHasFirst` and
-     the source is the centre, append `" (+ first player)"`. Colour names from `COLOR_NAMES`.
-   - wall: `"<name> tiled their wall"`, with `" (+n)"` / `" (−n)"` when the score changed between
-     `prev` and `next` for that seat, nothing when it did not.
-2. **A new round**: `next.board.round > prev.board.round` and the game is not finished →
-   `"Round <round> begins"`.
+**Consecutive or not.** `consecutive = next.version === prev.version + 1`. The server coalesces
+event-stream notifications (`EventHub.cs`), so a client can jump several versions; then `prev` is
+not the state just before `next.lastMove`, and anything inferred by comparing the two views (the
+first-player marker leaving the centre, a score change) could belong to a different move. Those
+inferred parts are added **only when consecutive**; the rest of the sentence comes from
+`lastMove` alone and is always correct. Skipped moves are not narrated (the view does not carry
+them; recovering them is a server change, a non-goal).
 
-No line when `prev.board` or `next.board` is null (lobby → playing is not narrated). Versions that
-skipped over moves (SSE coalescing) narrate only the move in `next.lastMove`; the view does not
-carry the others, and recovering them would need a server change (non-goal).
+1. **The move**, when `next.lastMove` exists and `lastMove.version === next.version`, and the seat
+   passes the own-seat rule below. `who = seatName(next, seat)`.
+   - take, `color === 5`: `"took the first-player marker"`.
+   - take, other colours: `"took <tiles> <colour> from factory <factory + 1> → line <row + 1>"`;
+     from the centre (`factory === next.board.factories.length`; the factory count never changes
+     within a game): `"… from the centre"`; `row === 5`: `"… → floor"`. `tiles` is everything of
+     that colour taken; overflow is not described. When consecutive and
+     `prev.board.centerHasFirst && !next.board.centerHasFirst`, append `" (+ first player)"`.
+     Colour names from `COLOR_NAMES`; `color` set on the narration.
+   - wall (`columns`: −1 = no completed line, 0–4 = wall column, 5 = floor):
+     - some column in 0–4: `"placed <k> tile(s) on their wall"`, k = how many;
+     - none in 0–4 but some 5: `"sent their completed lines to the floor"`;
+     - all −1 (a forced scoring turn): `"scored the round"`.
+     When consecutive and the seat's score changed, append `" (+n)"` / `" (−n)"`.
+2. **A new round**: `next.board.round > prev.board.round` and `next.status !== 'finished'` →
+   `{ who: null, text: "Round <round> begins" }` (correct even across a gap).
+
+**Own-seat rule.** A move on `next.you.seat` is narrated only when it was not made by hand from
+this client: `next.seats[seat].kind === 'bot'` (a bot took over your seat), or `prev.autoPlay` was
+true (the server played your forced turn). Otherwise the user made it and is not told about it.
+A move you made by hand in *another* tab or device is therefore not narrated either — the view
+does not say which client sent a move; accepted as a limitation. Spectators (`you.seat === null`)
+get every seat.
+
+No bubble when `prev.board` or `next.board` is null (lobby → playing is not narrated).
 
 ### 4.2 Toast store — `web/src/lib/toasts.svelte.ts`
 
 Module-level `$state` list, so `Toasts.svelte` and `GamePage.svelte` share it without props.
 
 ```ts
-export const toasts: { items: { id: number; text: string; kind: 'info' | 'warn' }[] };
-export function toast(text: string, kind?: 'info' | 'warn'): void;
+export interface Toast extends Narration { id: number; kind: 'info' | 'warn' }
+export const toasts: { items: Toast[] };
+export function toast(n: Narration | string, kind?: 'info' | 'warn'): void;  // string → { who: null, text }
 export function dismiss(id: number): void;
 export function clearToasts(): void;
 ```
@@ -127,17 +150,20 @@ export function clearToasts(): void;
 
 - Mounted once in `GamePage.svelte`. `position: fixed`, top centre, below the header
   (`top: 8px` plus safe-area inset), `z-index` above the table and below the `Sheet` (10).
-  Width `min(92vw, 420px)`; text truncates to one line with ellipsis, full text in `title`.
+  Width `min(92vw, 420px)`. Layout per bubble: `who` in bold, truncated with ellipsis at 40 % of
+  the bubble width (full name in `title`), then `text`, which wraps to at most two lines
+  (`-webkit-line-clamp: 2`). So a very long email local part (the 360 px e2e fixture) still leaves
+  the move readable.
 - New bubbles appear **under** the ones already up (catan's top-anchored order).
-- Each bubble: card background, shadow, 12 px radius, a colour dot for take moves (the tile
-  colour, from a `color?: number` field on the item), × button `aria-label="Dismiss"`.
+- Each bubble: card background, shadow, 12 px radius, a colour dot when `color` is set (from
+  `TILE_COLORS`), × button `aria-label="Dismiss"`. `warn` bubbles use `--warn-bg`.
 - Container `role="status"` `aria-live="polite"`, so screen readers announce moves.
 - Svelte `fly`/`fade` transitions, 150 ms; none under reduced motion.
 
 ### 4.4 Wiring — `GamePage.svelte`
 
-- In `accept(next)`, after the sounds, when `prev` exists: `for (const line of narrate(prev,
-  next)) toast(line)`.
+- In `accept(next)`, after the sounds, when `prev` exists: `for (const n of narrate(prev, next))
+  toast(n)`.
 - `"The board changed"` (409) becomes `toast('The board changed', 'warn')` instead of the
   `notice` banner, and the `notice` state goes away. The "Reconnecting…", "Signed out" and error
   banners stay: they describe a condition that lasts, a bubble that fades would hide it.
@@ -205,9 +231,13 @@ geometry has one home. Props: `board`, `selectedColor(factory)`, `canPick(factor
 **One DOM, two layouts, chosen by a container query** on the market's inner wrapper
 (`container: market / inline-size`), not by viewport width:
 
-- **Ring** when the wrapper is **≥ 410 px** wide. With today's desktop grid
-  (`minmax(280px, 2fr) 3fr`, unchanged) that is a viewport of about 1120 px and up — at 1440 px the
-  wrapper is ≈ 473 px.
+- **Ring** when the viewport is **≥ 900 px** *and* the wrapper is **≥ 410 px** wide
+  (`@media (min-width: 900px) { @container market (min-width: 410px) { … } }`). The media gate
+  matters: below 900 px the table is one column, so on a 480 px phone the wrapper alone would be
+  ≈ 430 px and qualify. With today's desktop grid (`minmax(280px, 2fr) 3fr`, unchanged) the ring
+  starts at a viewport of about 1120 px; at 1440 px the wrapper is ≈ 474 px. Playwright's default
+  Desktop Chrome viewport (1280 × 720) is in ring mode, so `game.spec.ts` plays a whole game
+  through it.
 - **Grid** below that (phones, and desktop 900–1120 px): the factory grid as today, the centre
   below it as a felt panel.
 
@@ -231,6 +261,13 @@ At the 410 px threshold a 9-factory ring has 0.22 × 410 = 90 px factories; 5 or
 98 px. Each factory gets inline custom properties (`--x`, `--y`, `--d`); only the `@container`
 rule uses them for absolute placement, so the grid layout ignores them.
 
+The geometry separates the factories as **circles** (the factory sprite is round), not as boxes:
+neighbouring centres are ≥ `d + 4` % apart. Their square SVG boxes do overlap at the corners
+(n = 9: factories 4/5 and 6/7). So in ring mode the factory `<svg>` gets `pointer-events: none`
+and its tile images `pointer-events: auto`: a transparent corner of one factory never swallows a
+tap meant for its neighbour's tile. (Tile images sit at 10–120 of the 130-unit box, inside the
+circle, so they never overlap a neighbour's.)
+
 **Centre** (`CenterView`): in ring mode a felt disc (`--felt`, soft inner shadow) centred in the
 box; in grid mode a felt rounded rectangle. Its groups become a tile with a count badge in the
 corner (`×n` → a small pill on the tile), 36 px, so six groups (5 colours + the FIRST marker) fit
@@ -245,30 +282,41 @@ a tiny `lib/motion.ts` `reducedMotion()` helper so tests can stub it).
 
 ### 7.1 Tile flight — `web/src/components/Flight.svelte`
 
-- Trigger: in `Table.svelte`, a new version whose `lastMove` is a take with
-  `lastMove.version === view.version`, by **any** seat (including you — your confirm gets the
-  flight too), and `color !== 5`.
+- **Trigger**: in `Table.svelte`, a new version where `view.version === prevVersion + 1`
+  (consecutive, so the previous render is exactly the state before the move), `lastMove` is a
+  take with `lastMove.version === view.version`, by **any** seat (your confirm gets the flight
+  too). Not consecutive → no flight, no hiding; the state just changes.
+- **What arrives where** — pure helper `arrivals(prev: PlayerView, next: PlayerView)` in
+  `lib/selection.ts` (beside `ghost`, which already computes the same split for the preview):
+  - `line: { row, from, to } | null` — the pattern line whose count grew: `from` = previous count
+    (0 if it held nothing), `to` = new count. Tiles beyond the line's capacity are not here.
+  - `floor: number[]` — indices in `floorDisplay(next.floor, next.hasFirst).tiles` (colour order,
+    FIRST marker first, at most 7) that are new. Computed by **colour count**, not by position,
+    because the server rebuilds the floor in colour order (`Projection.cs`): for each colour,
+    new = next count − prev count, and the new tiles of that colour are the **last** ones of its
+    run in the display; the marker is new when `!prev.hasFirst && next.hasFirst`. Indices ≥ 7
+    (shown as `+n`) are dropped.
 - **Source**: the element `[data-flight-source="<factory>"]` — the factory `svg` (it stays mounted
-  when empty) or the centre container. Its bounding box is read after the DOM update
-  (`tick()`); the centre of the box is the start point, spread ±12 px per tile.
-- **Destination**: `[data-flight-dest="<seat>:<row>"]`, an element that each visible
-  representation of a pattern line or floor exposes:
-  - `PlayerBoard` puts it on an invisible `<rect>` per line (`lineBox(row)`) and the floor
-    (`FLOOR_BOX`), always present, not only when interactive;
-  - `OpponentCard` puts it on each line's row and on the floor strip.
-  Only the first match with a non-zero bounding box is used, so the `display: none` desktop or
-  phone duplicate is ignored (a card scrolled off screen still counts; the flight ends off screen).
-  No match → no flight.
-- **Flight**: `min(tiles, 5)` absolutely positioned `<img>`s (tile sprite) in a fixed overlay,
-  animated with the Web Animations API from start to the destination centre over **450 ms**,
-  `ease-in-out`, 40 ms stagger, slight scale 1 → 0.85, then removed. Total ≤ 650 ms.
-- **Landing**: the destination's newly added tiles are drawn at opacity 0 until the flight lands,
-  then fade in over 120 ms. "Newly added" = indices ≥ the line's count in the previous version,
-  which `Table` keeps from the version it last rendered (a `prevLines` snapshot taken in the
-  existing `$effect.pre` on version change). Floor tiles: indices ≥ previous floor length. If the
-  previous version is not exactly `version − 1`, there is no flight and no hiding (the state jumps).
-- Pending flights are cancelled (overlay cleared, hidden tiles shown) when a newer version
-  arrives mid-flight.
+  when empty) or the centre container. Its bounding box is read after the DOM update (`tick()`);
+  the box centre is the start point, spread ±12 px per tile.
+- **Destinations**: `[data-flight-dest="<seat>:<row>"]` for a pattern line and
+  `[data-flight-dest="<seat>:floor"]`, which each visible representation exposes:
+  - `PlayerBoard`: an invisible `<rect>` per line (`lineBox(row)`) and for the floor
+    (`FLOOR_BOX`), always rendered, not only when interactive. They carry no `data-row`, so the
+    existing `PlayerBoard.test.ts` counts of `[data-row]` stay 0 / 6.
+  - `OpponentCard`: each line's row and the floor strip.
+  The first match with a non-zero bounding box is used, so the `display: none` desktop or phone
+  duplicate is ignored (a card scrolled off screen still counts; the flight ends off screen).
+  No match → no flight for that part.
+- **Flight**: one sprite per arriving tile, capped at 5 to the line and 7 to the floor (the marker
+  flies with the floor tiles, using `tile_first.png`), absolutely positioned `<img>`s in a fixed
+  overlay, animated with the Web Animations API to the destination centre over **450 ms**,
+  `ease-in-out`, 40 ms stagger, scale 1 → 0.85, then removed. Total ≤ 650 ms.
+- **Landing**: until the flight lands, `PlayerBoard` draws the arriving tiles (line indices
+  `from … to − 1`, the floor indices from `arrivals`) at opacity 0, then fades them in over
+  120 ms. `Table` passes the `arrivals` result down as a prop (`arriving`) to the board of that
+  seat; the phone card shows tiles immediately (its cells are too small for the effect to read).
+- A newer version mid-flight cancels the pending flight: overlay cleared, `arriving` reset to null.
 
 ### 7.2 Scores
 
@@ -324,29 +372,40 @@ infinite, alternate) box-shadow pulse in `--glow`. Not during `finished`.
 
 Unit (Vitest, jsdom), written before the code:
 
-- `narrate.test.ts`: each sentence form (factory/centre/floor/first-player marker/wall with +, −
-  and no score change/round change); own move not narrated; spectator narrates all; null boards;
-  `lastMove.version !== next.version` → no move line.
+- `narrate.test.ts`: each take form (factory, centre, floor, first-player marker, "+ first
+  player"); each wall form (wall columns, floor only, all −1) with +, − and unchanged score; round
+  change; own hand-made move not narrated, own forced move (`prev.autoPlay`) and own bot-seat move
+  narrated; spectator narrates all; null boards; `lastMove.version !== next.version` → no move
+  bubble; **a version gap**: player A took the marker and B's centre take arrives two versions
+  later → B's bubble has no "+ first player" and no score suffix.
+- `selection.test.ts` (`arrivals`): line fill from empty and from partial; overflow split between
+  line and floor; floor colour reorder (blue arriving on a floor holding white → the blue index is
+  new, white's is not); marker arriving with a centre take; more than 7 floor tiles.
 - `toasts.test.ts`: cap of three drops the oldest; auto-dismiss at 3 s (fake timers); early dismiss
   clears its timer; `clearToasts`.
 - `geometry.test.ts`: `wallColor` matches the printed board's first two rows; `floorPenalty` for
-  0, 1, 7, 9 tiles; `ringLayout(n)` for 5/7/9: neighbouring factories do not overlap, every factory
-  is inside the box, the disc does not touch any factory, `d(n)` × 410 px ≥ 90 px.
+  0, 1, 3, 6, 7 and 9 (−14 cap); `ringLayout(n)` for 5/7/9: neighbouring factories do not overlap, every factory
+  is inside the box, neighbouring factory **circles** are ≥ `d + 4` apart, the disc does not
+  touch any factory circle, `d(n)` × 410 px ≥ 90 px.
 - `OpponentCard.test.ts` (new): renders 15 line slots, 25 wall cells, 7 floor slots; filled counts
   match a fixture; penalty text; first-player marker shown when held.
 - `Table.test.ts`: no discard, no bag (replaces the current test).
 - `GamePage.test.ts`: an opponent's move from the event stream adds a bubble with the sentence;
   your own does not; the 409 bubble; three-cap through the page.
-- Flight: a unit test with `reducedMotion()` stubbed false checks that a take creates N overlay
-  images and removes them (`Element.animate` stubbed in jsdom); with it stubbed true, none.
+- Flight: a unit test with `reducedMotion()` stubbed false checks that a consecutive take creates
+  one overlay image per arriving tile (line + floor, with the caps) and removes them
+  (`Element.animate` stubbed in jsdom); with it stubbed true, none; a non-consecutive version,
+  none.
 
 e2e (Playwright, existing harness):
 
 - `layout.spec.ts`: existing tests stay (360 px no scroll with 4 players, desktop factory ≥ 90 px,
   opponent width ≤ 0.6 × mine). Add: the phone opponent card shows lines, wall and floor (count of
-  cells) and still no horizontal scroll; at 1440 px the factories sit on a ring (pairwise
-  non-overlapping boxes, all ≥ 90 px) with the centre disc inside the ring; at 900 px the grid
-  layout is used and the factory ≥ 90 px and opponent ≤ 0.6 × your board bars still hold.
+  cells) and still no horizontal scroll; at 480 px the grid layout is used (no ring on a wide
+  phone); at 1440 px the factories sit on a ring (all ≥ 90 px wide, neighbouring centres at least
+  one factory width apart, i.e. circles do not overlap) with the centre disc inside the ring; at
+  900 px the grid layout is used and the factory ≥ 90 px and opponent ≤ 0.6 × your board bars
+  still hold.
 - `game.spec.ts`: a full game still completes. Playwright runs with `reducedMotion: 'reduce'` in
   the existing tests so flights do not slow the suite or intercept clicks; one new test runs with
   motion on and checks that an opponent bot's move produces a bubble.
@@ -359,4 +418,23 @@ checkout at the same time would collide. Run them one at a time.
 
 ## 11. Review log
 
-(Codex adversarial review findings and their resolution go here.)
+Codex adversarial review of the first draft (2026-10-04); all ten findings accepted.
+
+1. Floor penalty used −3 per tile past seven and ignored the cap → mirror `FloorToScore`
+   (−14 cap) with the marker counted (§3).
+2. Landing detection by floor index hid existing tiles, since the floor is colour-ordered →
+   `arrivals()` diffs colour counts and the marker (§7.1).
+3. Flights sent overflow to the line → separate line and floor destinations from `arrivals()`
+   (§7.1).
+4. Nine-factory square boxes overlap at the corners, contradicting a box test → separation is
+   between circles, tests assert that, and SVG boxes do not take pointer events in ring mode (§6.1,
+   §10).
+5. The container query alone put the ring on 430 px-wide phones → gated by `min-width: 900px` too,
+   tested at 480 px (§6.1, §10).
+6. Version gaps misattributed the marker and score changes → inferred parts only for consecutive
+   versions, with a gap test (§4.1).
+7. A wall move need not tile the wall → wording from `columns` (wall / floor / scored) (§4.1).
+8. Own-seat suppression also hid forced turns and bot-seat moves → narrate those (§4.1).
+9. No path for the colour dot through `string[]` → structured `Narration` (§4.1, §4.2).
+10. One-line truncation could cut the whole move behind a long name → name truncated separately,
+    text wraps to two lines (§4.3).
