@@ -19,17 +19,22 @@ public static class Projection
         BoardView? board = null;
         LegalView? legal = null;
         ResultView? result = null;
+        bool autoPlay = false;
         if (g.StateJson is not null)
         {
             var game = Game.FromSnapshot(Snapshot(g));
             board = Board(game, g.Status);
             if (g.Status == Status.Playing && seat is { } s && g.Seats[s].Kind == SeatKind.Human && game.activePlayer == s)
-                legal = Legal(game);
+            {
+                // A forced turn is played by the server (GameService.GetServerTurn).
+                if (game.ForcedMove() is not null) autoPlay = true;
+                else legal = Legal(game);
+            }
             if (g.Status == Status.Finished)
                 result = Result(game, g.FinishReason ?? "normal");
         }
         return new GameView(g.Id, g.Status, g.Version, g.NumPlayers, g.Creator, new ViewerInfo(viewer, seat),
-            SeatViews(g), board, legal, LastMove(last), result);
+            SeatViews(g), board, legal, LastMove(last), result, autoPlay);
     }
 
     public static MoveJson Describe(Move m) => m.colIdx[0] == Move.NOT_SET

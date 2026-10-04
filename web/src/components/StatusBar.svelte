@@ -12,6 +12,9 @@
   <span>Round {board.round}</span>
   {#if view.status === 'finished'}
     <strong>Game over</strong>
+  {:else if view.autoPlay}
+    <strong data-testid="auto-play">{board.phase === 'wall' ? 'Scoring your wall…'
+      : board.centerHasFirst ? 'Taking the first-player marker…' : 'Your only move is being played…'}</strong>
   {:else if yourTurn}
     <strong data-testid="your-turn">Your turn{board.phase === 'wall' ? ': place your tiles' : ''}</strong>
   {:else}

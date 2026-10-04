@@ -13,7 +13,7 @@ const takeLegal: LegalView = {
 function view(legal: LegalView | null): GameView {
   return {
     id: 'g', status: 'playing', version: 4, numPlayers: 2, creator: 'a', you: { email: 'a', seat: 0 },
-    seats: [], legal, lastMove: null, result: null,
+    seats: [], legal, lastMove: null, result: null, autoPlay: false,
     board: {
       round: 1, phase: 'take', activeSeat: 0, factories: [[0, 3, 1, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]],
       center: [0, 0, 0, 0, 0], centerHasFirst: true, bag: [0, 0, 0, 0, 0], discard: [0, 0, 0, 0, 0],

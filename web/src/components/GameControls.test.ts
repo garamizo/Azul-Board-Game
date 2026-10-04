@@ -7,7 +7,7 @@ function game(you: string, seats: SeatView[], status: GameView['status'] = 'play
   const seat = seats.find((s) => s.email === you)?.idx ?? null;
   return {
     id: 'abcdefghij', status, version: 9, numPlayers: seats.length, creator: 'a@x', you: { email: you, seat },
-    seats, board: null, legal: null, lastMove: null, result: null,
+    seats, board: null, legal: null, lastMove: null, result: null, autoPlay: false,
   };
 }
 

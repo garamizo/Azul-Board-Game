@@ -39,6 +39,7 @@ export interface GameView {
   legal: LegalView | null;
   lastMove: LastMoveView | null;
   result: ResultView | null;
+  autoPlay: boolean;  // your turn has one legal move and the server plays it (legal is null)
 }
 export interface GameSummary {
   id: string; status: GameStatus; numPlayers: number; creator: string;

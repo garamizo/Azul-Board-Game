@@ -19,8 +19,11 @@ public sealed record WallRowView(int Color, int[] Targets);
 public sealed record LegalView(int[][]? Takes, WallRowView?[]? Wall);
 public sealed record LastMoveView(long Version, int Seat, string Kind, int? Factory, int? Color, int? Row, int? Tiles, int[]? Columns);
 public sealed record ResultView(int[] Scores, int[] Winners, string Reason);
+/// AutoPlay: the viewer's turn has one legal move, which the server plays
+/// (Legal is then null).
 public sealed record GameView(string Id, string Status, long Version, int NumPlayers, string Creator, ViewerInfo You,
-    SeatView[] Seats, BoardView? Board, LegalView? Legal, LastMoveView? LastMove, ResultView? Result);
+    SeatView[] Seats, BoardView? Board, LegalView? Legal, LastMoveView? LastMove, ResultView? Result,
+    bool AutoPlay = false);
 public sealed record GameSummary(string Id, string Status, int NumPlayers, string Creator, SeatView[] Seats, int? Round, string UpdatedAt);
 
 /// What a move did, as stored in moves.move_json.

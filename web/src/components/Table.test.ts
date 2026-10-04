@@ -9,7 +9,7 @@ function myTurn(): GameView {
   return {
     id: 'abcdefghij', status: 'playing', version: 7, numPlayers: 2, creator: 'a@x', you: { email: 'a@x', seat: 0 },
     seats: [{ idx: 0, kind: 'human', email: 'a@x' }, { idx: 1, kind: 'bot', email: null }],
-    legal: { takes: [[0, 1, 0], [0, 1, 5]], wall: null }, lastMove: null, result: null,
+    legal: { takes: [[0, 1, 0], [0, 1, 5]], wall: null }, lastMove: null, result: null, autoPlay: false,
     board: {
       round: 1, phase: 'take', activeSeat: 0,
       factories: [[0, 2, 0, 1, 1], [1, 1, 1, 1, 0], [0, 0, 4, 0, 0], [2, 2, 0, 0, 0], [0, 0, 0, 2, 2]],
@@ -56,6 +56,23 @@ describe('Table', () => {
     const text = getByTestId('supply').textContent!.replace(/\s+/g, ' ');
     expect(text).toContain('Bag 12 10 9 14 11');
     expect(text).toContain('Discard 0 1 0 0 2');
+  });
+
+  it('a forced turn shows the auto-play step, not Your turn or Confirm', () => {
+    const v = myTurn();
+    v.legal = null;
+    v.autoPlay = true;
+    v.board!.phase = 'wall';
+    const { getByTestId, queryByTestId, queryByRole } = render(Table, { view: v, send: vi.fn() });
+    expect(getByTestId('auto-play').textContent).toContain('Scoring your wall…');
+    expect(queryByTestId('your-turn')).toBeNull();
+    expect(queryByRole('button', { name: 'Confirm' })).toBeNull();
+  });
+
+  it('a forced take says the first-player marker is being taken', () => {
+    const v = { ...myTurn(), legal: null, autoPlay: true };
+    const { getByTestId } = render(Table, { view: v, send: vi.fn() });
+    expect(getByTestId('auto-play').textContent).toContain('Taking the first-player marker…');
   });
 
   it('spectators see no Confirm button', () => {

@@ -8,7 +8,7 @@ function lobby(you: string): GameView {
     id: 'abcdefghij', status: 'lobby', version: 2, numPlayers: 3, creator: 'a@x',
     you: { email: you, seat: you === 'a@x' ? 0 : null },
     seats: [{ idx: 0, kind: 'human', email: 'a@x' }, { idx: 1, kind: 'open', email: null }, { idx: 2, kind: 'bot', email: null }],
-    board: null, legal: null, lastMove: null, result: null,
+    board: null, legal: null, lastMove: null, result: null, autoPlay: false,
   };
 }
 

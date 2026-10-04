@@ -23,7 +23,7 @@
     const last = next.lastMove;
     if (last && last.version === next.version && last.seat !== next.you.seat)
       sounds.play(next.seats[last.seat]?.kind === 'bot' ? 'botMove' : 'select');
-    if (next.legal && !prev.legal) sounds.play('yourTurn');
+    if (next.legal && !next.autoPlay && !prev.legal) sounds.play('yourTurn');
     if (next.status === 'finished' && prev.status !== 'finished')
       sounds.play(next.you.seat !== null && next.result?.winners.includes(next.you.seat) ? 'win' : 'lose');
     else if (next.board && prev.board && next.board.round > prev.board.round) sounds.play('score');
