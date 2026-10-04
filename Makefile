@@ -10,7 +10,7 @@ DOTNET := docker run --rm -i --user $(UID):$(GID) \
 	-e DOTNET_NOLOGO=1 -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
 	-v $(CURDIR):/src -v $(NUGET_DIR):/nuget -w /src $(SDK_IMAGE) dotnet
 
-.PHONY: dotnet build test desktop-smoke dev-server web-test e2e-publish e2e-server-start e2e-server-restart e2e-server-stop e2e serve serve-app serve-check serve-check-local serve-logs serve-down dev-stack dev-stack-down
+.PHONY: dotnet build test desktop-smoke dev-server web-test e2e-publish e2e-server-start e2e-server-restart e2e-server-stop e2e serve serve-app serve-check serve-check-local serve-logs serve-down dev-stack dev-stack-down load-test crash-test backup restore
 
 $(NUGET_DIR):
 	mkdir -p $@
@@ -100,3 +100,25 @@ dev-stack:
 
 dev-stack-down:
 	$(DEV) down -v
+
+load-test: dev-stack
+	python3 scripts/bot_load.py
+
+crash-test: dev-stack
+	python3 scripts/crash_test.py
+
+# Backups of a stack's database (STACK=serve or dev), WAL-safe via sqlite3 .backup.
+STACK ?= serve
+BACKUP_DIR ?= $(HOME)/backups/azul
+backup:
+	mkdir -p $(BACKUP_DIR)
+	docker run --rm -v azul-$(STACK)_azul$(if $(filter dev,$(STACK)),-dev,)-data:/data -v $(BACKUP_DIR):/out alpine \
+		sh -c 'f=/out/azul-$(STACK)-$$(date +%Y%m%d-%H%M%S).db && apk add -q sqlite && sqlite3 /data/azul.db ".backup $$f" && chown $(UID):$(GID) $$f && echo $$f'
+
+# make restore FILE=~/backups/azul/azul-serve-....db [STACK=serve]; stops the app first.
+restore:
+	test -f "$(FILE)"
+	docker compose -f docker-compose.$(STACK).yml $(if $(filter serve,$(STACK)),--env-file .env.serve,) stop app
+	docker run --rm -v azul-$(STACK)_azul$(if $(filter dev,$(STACK)),-dev,)-data:/data -v $(abspath $(FILE)):/in.db:ro alpine \
+		sh -c 'rm -f /data/azul.db-wal /data/azul.db-shm && cp /in.db /data/azul.db && chown 1654:1654 /data/azul.db'
+	docker compose -f docker-compose.$(STACK).yml $(if $(filter serve,$(STACK)),--env-file .env.serve,) up -d --wait app
