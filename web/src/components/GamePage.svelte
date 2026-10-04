@@ -19,14 +19,18 @@
     const prev = view;
     if (prev && next.version <= prev.version) return;
     view = next;
+    // A newer board supersedes "The board changed" (failed() sets it again
+    // right after accepting the 409's view).
+    notice = '';
     if (!prev) return;
     const last = next.lastMove;
     if (last && last.version === next.version && last.seat !== next.you.seat)
       sounds.play(next.seats[last.seat]?.kind === 'bot' ? 'botMove' : 'select');
     if (next.legal && !next.autoPlay && !prev.legal) sounds.play('yourTurn');
-    if (next.status === 'finished' && prev.status !== 'finished')
-      sounds.play(next.you.seat !== null && next.result?.winners.includes(next.you.seat) ? 'win' : 'lose');
-    else if (next.board && prev.board && next.board.round > prev.board.round) sounds.play('score');
+    if (next.status === 'finished' && prev.status !== 'finished') {
+      if (next.you.seat !== null)  // spectators neither win nor lose
+        sounds.play(next.result?.winners.includes(next.you.seat) ? 'win' : 'lose');
+    } else if (next.board && prev.board && next.board.round > prev.board.round) sounds.play('score');
   }
 
   function failed(e: unknown) {

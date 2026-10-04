@@ -39,9 +39,11 @@ export function subscribe(id: string, on: Handlers): () => void {
       on.status('reconnecting');
       await new Promise((r) => setTimeout(r, DELAYS[Math.min(attempt++, DELAYS.length - 1)]));
       if (stopped) return;
+      // Each probe can outlive an unsubscribe: re-check `stopped` after it.
       try {
         await api.me();
       } catch (err) {
+        if (stopped) return;
         if (err instanceof ApiError && err.status === 401) {
           // api.me already reloaded the page once; if we are still here,
           // reloading again will not help.
@@ -50,9 +52,11 @@ export function subscribe(id: string, on: Handlers): () => void {
           return;
         }
       }
+      if (stopped) return;
       try {
         await api.game(id);
       } catch (err) {
+        if (stopped) return;
         if (err instanceof ApiError && err.status === 404) {
           stopped = true;
           on.deleted();

@@ -65,6 +65,43 @@ describe('subscribe', () => {
     expect(FakeSource.last).toBe(first);
   });
 
+  it('unsubscribing while the game probe is pending: a late 404 does not report deleted', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('EventSource', FakeSource);
+    vi.spyOn(api, 'me').mockResolvedValue({ email: 'a@x' });
+    let reject!: (e: unknown) => void;
+    vi.spyOn(api, 'game').mockReturnValue(new Promise((_, r) => { reject = r; }));
+    const deleted = vi.fn();
+    const stop = subscribe('abc', { state: () => {}, deleted, status: () => {} });
+    const first = FakeSource.last;
+    first.onerror!();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.game).toHaveBeenCalled();
+    stop();
+    reject(new ApiError(404, { error: 'not-found' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deleted).not.toHaveBeenCalled();
+    expect(FakeSource.last).toBe(first);
+  });
+
+  it('unsubscribing while the probes are pending opens no new stream and reports nothing', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('EventSource', FakeSource);
+    let meReject!: (e: unknown) => void;
+    vi.spyOn(api, 'me').mockReturnValue(new Promise((_, r) => { meReject = r; }));
+    vi.spyOn(api, 'game').mockResolvedValue({} as never);
+    const statuses: string[] = [];
+    const stop = subscribe('abc', { state: () => {}, deleted: () => {}, status: (s) => statuses.push(s) });
+    const first = FakeSource.last;
+    first.onerror!();
+    await vi.advanceTimersByTimeAsync(1000);
+    stop();
+    meReject(new ApiError(401, null));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual(['reconnecting']);
+    expect(FakeSource.last).toBe(first);
+  });
+
   it('the deleted event ends the subscription', () => {
     vi.stubGlobal('EventSource', FakeSource);
     const deleted = vi.fn();

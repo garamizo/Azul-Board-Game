@@ -81,10 +81,13 @@ export function ghost(view: GameView, sel: TakeSel, seat: number):
   if (!board || !sel.source || sel.row === null) return null;
   const { factory, color } = sel.source;
   if (color === FIRST) return { row: FLOOR, color, placed: 0, overflow: 0 };
-  const count = factory < board.factories.length ? board.factories[factory][color] : board.center[color];
-  if (sel.row === FLOOR) return { row: FLOOR, color, placed: 0, overflow: count };
+  const fromCentre = factory >= board.factories.length;
+  const count = fromCentre ? board.center[color] : board.factories[factory][color];
+  // The first take from the centre also brings the marker to the floor.
+  const marker = fromCentre && board.centerHasFirst ? 1 : 0;
+  if (sel.row === FLOOR) return { row: FLOOR, color, placed: 0, overflow: count + marker };
   const line = board.players[seat].lines[sel.row];
   const have = line && line[0] === color ? line[1] : 0;
   const placed = Math.min(count, sel.row + 1 - have);
-  return { row: sel.row, color, placed, overflow: count - placed };
+  return { row: sel.row, color, placed, overflow: count - placed + marker };
 }

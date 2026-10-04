@@ -37,7 +37,8 @@
     return () => clearInterval(timer);
   });
 
-  const isMine = (g: GameSummary) => g.seats.some((s) => s.email === me);
+  // An unseated creator still owns the game (can seat people, start or delete it).
+  const isMine = (g: GameSummary) => g.creator === me || g.seats.some((s) => s.email === me);
   const mine = $derived(games.filter((g) => g.status !== 'finished' && isMine(g)));
   const joinable = $derived(games.filter((g) => g.status === 'lobby' && !isMine(g) && g.seats.some((s) => s.kind === 'open')));
   const watchable = $derived(games.filter((g) => g.status === 'playing' && !isMine(g)));

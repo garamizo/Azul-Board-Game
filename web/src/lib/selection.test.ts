@@ -54,6 +54,19 @@ describe('take phase', () => {
     expect(ghost(v, { phase: 'take', source: { factory: 0, color: 2 }, row: 3 }, 0)).toEqual({ row: 3, color: 2, placed: 1, overflow: 0 });
     expect(ghost(v, { phase: 'take', source: { factory: 0, color: 1 }, row: FLOOR }, 0)).toEqual({ row: FLOOR, color: 1, placed: 0, overflow: 3 });
   });
+
+  it('ghost counts the first-player marker joining the floor on a centre take', () => {
+    const v = view(takeLegal);
+    v.board!.center = [0, 0, 2, 0, 0];
+    const centre = v.board!.factories.length;
+    // 2 red onto line 0 (capacity 1): 1 placed, 1 red and the marker to the floor.
+    expect(ghost(v, { phase: 'take', source: { factory: centre, color: 2 }, row: 0 }, 0)).toEqual({ row: 0, color: 2, placed: 1, overflow: 2 });
+    expect(ghost(v, { phase: 'take', source: { factory: centre, color: 2 }, row: FLOOR }, 0)).toEqual({ row: FLOOR, color: 2, placed: 0, overflow: 3 });
+    // A factory take, or a centre take once the marker is gone, adds nothing.
+    expect(ghost(v, { phase: 'take', source: { factory: 0, color: 1 }, row: FLOOR }, 0)!.overflow).toBe(3);
+    v.board!.centerHasFirst = false;
+    expect(ghost(v, { phase: 'take', source: { factory: centre, color: 2 }, row: 0 }, 0)!.overflow).toBe(1);
+  });
 });
 
 describe('wall phase', () => {
