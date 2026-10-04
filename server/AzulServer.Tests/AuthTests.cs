@@ -131,6 +131,19 @@ public sealed class AuthTests : IDisposable
     }
 
     [Fact]
+    public async Task CallerCancellingTheFetchDoesNotPoisonTheNextRequest()
+    {
+        var cache = app.Service<JwksCache>();  // starts the server before the clock below
+        jwks.Delay = TimeSpan.FromMilliseconds(300);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        try { await cache.LookupAsync("k1", cts.Token); }
+        catch (OperationCanceledException) { }
+        jwks.Delay = TimeSpan.Zero;
+        await Task.Delay(500);
+        Assert.Equal(HttpStatusCode.OK, (await Me(Jwt.Token(k1, "k1"))).StatusCode);
+    }
+
+    [Fact]
     public async Task HangingJwksGives503()
     {
         jwks.Delay = TimeSpan.FromSeconds(30);

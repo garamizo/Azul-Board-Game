@@ -63,14 +63,15 @@ public sealed class JwksCache(IJwksFetcher fetcher, AzulOptions options, TimePro
             lastAttempt = now;
             try
             {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(FetchTimeout);
+                // Not linked to the caller: an aborted request must not leave the cache
+                // with a failed attempt recorded for the next 30 s.
+                using var timeout = new CancellationTokenSource(FetchTimeout);
                 var json = await fetcher.FetchAsync(options.TeamDomain!, timeout.Token);
                 keys = new JsonWebKeySet(json).GetSigningKeys().ToList();
                 fetchedAt = now;
                 lastOk = true;
             }
-            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+            catch (Exception e)
             {
                 log.LogWarning(e, "Fetching Access signing keys failed");
                 lastOk = false;
