@@ -9,16 +9,17 @@ RUN cd web && npm ci --no-audit --no-fund
 COPY web/ web/
 RUN cd web && npm run build
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# Pinned to an exact patch version, with ContinuousIntegrationBuild: the bot's hub key includes the AzulLibrary MVID, so rebuilding the same source must give the same bytes (spec section 5).
+FROM mcr.microsoft.com/dotnet/sdk:10.0.401 AS build
 WORKDIR /src
 COPY AzulLibrary/AzulLibrary.csproj AzulLibrary/
 COPY server/AzulServer/AzulServer.csproj server/AzulServer/
 RUN dotnet restore server/AzulServer/AzulServer.csproj
 COPY AzulLibrary/ AzulLibrary/
 COPY server/AzulServer/ server/AzulServer/
-RUN dotnet publish server/AzulServer/AzulServer.csproj -c Release -o /out --no-restore
+RUN dotnet publish server/AzulServer/AzulServer.csproj -c Release -o /out --no-restore -p:ContinuousIntegrationBuild=true
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.12
 WORKDIR /app
 COPY --from=build /out/ /app/
 COPY --from=web /src/web/dist/ /app/wwwroot/

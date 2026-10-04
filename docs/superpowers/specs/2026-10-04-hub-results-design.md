@@ -247,7 +247,7 @@ Hub §5.1 says a bot's key must change whenever its effective behaviour can chan
 
 1. `GameStore.Update`, with `finished_at` set;
 2. `GameStore.InsertMove`;
-3. `HubOutbox.Queue`: an `INSERT OR IGNORE` of a `pending` row with `next_attempt_at = now`.
+3. `HubOutbox.Queue`: an `INSERT ... ON CONFLICT(game_id) DO NOTHING` of a `pending` row with `next_attempt_at = now`. A failing insert throws, which aborts the commit.
 
 `AfterCommit` then calls `hubSender.Wake()` (a no-op when the sender is off).
 
@@ -266,12 +266,13 @@ WHERE status = 'finished' AND hub_tracked = 1
   AND id NOT IN (SELECT game_id FROM hub_reports)
 ```
 
-For each such game, the sender loads it under its per-game lock (`GameService` exposes
-`QueueMissingReport(id)`), then builds and queues the report.
+For each such game, the sender calls `HubOutbox.QueueMissing`, which reads the game and
+writes the report in one `BEGIN IMMEDIATE` transaction. That is safe without the per-game
+lock because a finished game only changes by Delete, which also writes.
 
 - The only way a game reaches this state is a failed build in 6.1. Reconcile retries it
   once per cycle, and it keeps failing until the bug is fixed.
-- Each failure logs an error.
+- A failure is logged at error once per game per process, then at debug.
 
 ### 6.3 Sending
 

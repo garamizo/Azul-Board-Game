@@ -10,7 +10,7 @@ DOTNET := docker run --rm -i --user $(UID):$(GID) \
 	-e DOTNET_NOLOGO=1 -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
 	-v $(CURDIR):/src -v $(NUGET_DIR):/nuget -w /src $(SDK_IMAGE) dotnet
 
-.PHONY: dotnet build test desktop-smoke dev-server web-test e2e-publish e2e-server-start e2e-server-restart e2e-server-stop e2e serve serve-app serve-check serve-check-local serve-logs serve-down dev-stack dev-stack-down load-test crash-test backup restore
+.PHONY: dotnet build test desktop-smoke dev-server web-test e2e-publish e2e-server-start e2e-server-restart e2e-server-stop e2e serve serve-app serve-check serve-check-local serve-logs serve-down hub-status hub-retry dev-stack dev-stack-down load-test crash-test backup restore
 
 $(NUGET_DIR):
 	mkdir -p $@
@@ -75,12 +75,15 @@ e2e:
 
 SERVE := docker compose -f docker-compose.serve.yml --env-file .env.serve
 DEV := docker compose -f docker-compose.dev.yml
+NETWORK := docker network inspect signalwave >/dev/null 2>&1 || docker network create signalwave
 
 serve:
+	$(NETWORK)
 	$(SERVE) up -d --build --wait app
 	$(SERVE) up -d cloudflared
 
 serve-app:
+	$(NETWORK)
 	$(SERVE) up -d --build --wait app
 
 serve-check:
@@ -94,6 +97,15 @@ serve-logs:
 
 serve-down:
 	$(SERVE) down
+
+# Playhub delivery (docs/deploy.md): counts, failures, the bot key.
+hub-status:
+	$(SERVE) exec -T app /app/AzulServer hub status
+
+# make hub-retry GAME=<id>|--all-failed [REBUILD=1]
+hub-retry:
+	@test -n "$(GAME)" || (echo "GAME=<game id> or GAME=--all-failed is required" && exit 1)
+	$(SERVE) exec -T app /app/AzulServer hub retry $(GAME) $(if $(REBUILD),--rebuild,)
 
 dev-stack:
 	$(DEV) up -d --build --wait

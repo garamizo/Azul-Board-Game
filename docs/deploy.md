@@ -96,6 +96,31 @@ Catan. No restart. Removing someone takes effect when their Access session (24 h
   stopped stack's volume directly). Copy `.env.serve` and the backup to the new machine; there
   `make serve-app`, `make restore FILE=...`, `make serve-check-local`, then `make serve`.
 
+## Playhub
+
+Finished games are reported to Playhub (play.signalwave.dev) over the shared docker network
+`signalwave`; `make serve` creates it if playhub's stack has not.
+
+1. Register the game and write its key (from `~/playhub`, with playhub's serve stack up):
+   ```sh
+   npx tsx scripts/hub.ts --serve games put azul --name Azul --play-url https://azul.signalwave.dev \
+     --rated-rules "Every 2-4 player game that ends with a completed wall row and in which no seat was handed to the bot."
+   npx tsx scripts/hub.ts --serve games issue-key azul --key-out ../Azul-Board-Game/.env.serve --env-var AZUL_HUB_KEY
+   ```
+   While it writes, the CLI stages the key in a hidden `.env.serve.phk-*` file next to
+   `.env.serve`; `.gitignore` covers `.*.phk-*`, so such a file is never committed.
+2. `make serve`, then `make serve-check`: step 3 pings the hub with the key.
+3. Delivery: `make hub-status` (counts, failures, the bot key). A report the hub refused
+   (409/422) stays `failed`; after a fix, `make hub-retry GAME=<id>` resends it, or
+   `make hub-retry GAME=<id> REBUILD=1` rebuilds the body first. A rotated key (401) keeps
+   reports pending until the new key is in `.env.serve` and `make serve` restarts the app.
+4. The bot's key (`mcts@...`) changes when the engine assembly changes (any AzulLibrary code,
+   or a different compiler), when `AZUL_BOT_THINK_SECONDS` changes, or when
+   `MctsBrain.BrainRevision` is bumped. After such a deploy, retire the old bot from
+   `~/playhub`: `npx tsx scripts/hub.ts --serve bots list --game azul`, then
+   `npx tsx scripts/hub.ts --serve bots retire azul <old key>`. Machine speed and
+   `AZUL_BOT_WORKERS` change how many rollouts fit in the think time but not the key.
+
 ## Checking it live
 
 - An invited email reaches the lobby; someone else is refused at Cloudflare's page.

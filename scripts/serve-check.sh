@@ -2,7 +2,7 @@
 # The publishing-behind-cloudflare probes for azul.signalwave.dev:
 #   1. loopback /api/health -> 200
 #   2. loopback guarded paths (/api/games and the SPA at /) without a token -> 401
-#   3. machine-to-machine endpoints without their key -> 401: there are none
+#   3. the app reaches Playhub with its key (AzulServer hub ping: 422 on an empty report)
 #   4. public / -> a redirect to https://<team domain>/cdn-cgi/access/login...
 # `--local` runs 1-2 only (before cloudflared starts).
 set -uo pipefail
@@ -22,7 +22,15 @@ for path in /api/games /; do
   c=$(code "http://127.0.0.1:$PORT$path")
   [ "$c" = 401 ] && ok "2. loopback $path without a token is 401" || bad "2. loopback $path without a token is $c, expected 401"
 done
-echo "note  3. no machine-to-machine endpoints in this app"
+if [ -n "${AZUL_HUB_KEY:-}" ]; then
+  if out=$(docker compose -f docker-compose.serve.yml --env-file .env.serve exec -T app /app/AzulServer hub ping 2>&1); then
+    ok "3. the app reaches Playhub and its key is accepted"
+  else
+    bad "3. hub ping failed: $out"
+  fi
+else
+  echo "note  3. AZUL_HUB_KEY is empty: results are not reported to Playhub"
+fi
 
 if [ "${1:-}" != "--local" ]; then
   read -r status location < <(curl -s -o /dev/null --max-time 15 -w '%{http_code} %{redirect_url}' "https://$HOST/")

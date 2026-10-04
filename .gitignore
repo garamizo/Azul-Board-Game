@@ -18,3 +18,5 @@ web/playwright-report/
 web/.e2e-data/
 .env.serve
 web/public/assets/
+# the playhub CLI stages keys here next to .env.serve
+.*.phk-*

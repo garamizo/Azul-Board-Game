@@ -11,12 +11,18 @@ services:
   app:
     build: .
     restart: unless-stopped
+    networks: [default, signalwave]
     environment:
       AZUL_ACCESS_TEAM_DOMAIN: ${AZUL_ACCESS_TEAM_DOMAIN:?set in .env.serve (docs/deploy.md)}
       AZUL_ACCESS_AUD: ${AZUL_ACCESS_AUD:?set in .env.serve (docs/deploy.md)}
       AZUL_PUBLIC_ORIGIN: ${AZUL_PUBLIC_ORIGIN:-https://azul.signalwave.dev}
       AZUL_BOT_WORKERS: ${AZUL_BOT_WORKERS:-2}
       AZUL_BOT_THINK_SECONDS: ${AZUL_BOT_THINK_SECONDS:-3}
+      # Playhub (docs/deploy.md, "Playhub"): results go to the hub on the shared
+      # docker network; the key is written into .env.serve by the playhub CLI.
+      AZUL_HUB_URL: http://playhub:3000
+      AZUL_HUB_KEY: ${AZUL_HUB_KEY:-}
+      AZUL_HUB_PUBLIC_URL: ${AZUL_HUB_PUBLIC_URL:-https://play.signalwave.dev}
     ports: ["127.0.0.1:${AZUL_SERVE_PORT:-29648}:8080"]
     volumes: ["azul-data:/data"]
     healthcheck:
@@ -37,3 +43,7 @@ services:
     logging: *logging
 volumes:
   azul-data: {}
+networks:
+  # Shared with playhub's serve stack (it declares the same external network).
+  signalwave:
+    external: true
