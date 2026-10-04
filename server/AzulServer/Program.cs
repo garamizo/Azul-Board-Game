@@ -1,5 +1,6 @@
 using AzulServer;
 using AzulServer.Api;
+using AzulServer.Auth;
 using Microsoft.Extensions.FileProviders;
 
 if (args.Contains("--healthcheck"))
@@ -10,6 +11,9 @@ builder.Services.AddSingleton(sp =>
     AzulOptions.FromEnvironment(key => sp.GetRequiredService<IConfiguration>()[key]));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<IJwksFetcher, HttpJwksFetcher>();
+builder.Services.AddSingleton<JwksCache>();
+builder.Services.AddSingleton<AccessVerifier>();
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<AzulOptions>();  // fail fast on bad configuration
@@ -22,7 +26,11 @@ app.UseExceptionHandler(errors => errors.Run(async ctx =>
     await ctx.Response.WriteAsJsonAsync(new { error = "internal" });
 }));
 
-// (Task 8 adds the identity and CSRF middleware here, before static files.)
+if (options.DevMode)
+    app.Logger.LogWarning("DEV MODE: no Access JWT check; identity comes from X-Dev-User or the azul_dev_user cookie.");
+
+app.UseMiddleware<AccessAuthMiddleware>();
+app.UseMiddleware<CsrfMiddleware>();
 
 PhysicalFileProvider? files = options.WebRoot is { } webRoot && Directory.Exists(webRoot)
     ? new PhysicalFileProvider(Path.GetFullPath(webRoot))
