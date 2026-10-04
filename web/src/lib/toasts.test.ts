@@ -18,6 +18,16 @@ describe('toasts', () => {
     expect(toasts.items).toHaveLength(0);
   });
 
+  it('fades for its last 300 ms before it goes', () => {
+    toast('a');
+    vi.advanceTimersByTime(2699);
+    expect(toasts.items[0].leaving).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(toasts.items[0].leaving).toBe(true);
+    vi.advanceTimersByTime(300);
+    expect(toasts.items).toHaveLength(0);
+  });
+
   it('dismissing early clears its timer', () => {
     toast('a');
     dismiss(toasts.items[0].id);

@@ -45,7 +45,7 @@ test('on a phone a bot move shows a bubble that taps go through, except its ×',
   // its text, whether a tap at its middle reaches the page under it (hit testing
   // honours pointer-events), and whether a tap on × reaches the × button.
   await alice.evaluate(() => {
-    const seen: { text: string; through: boolean; close: boolean }[] = [];
+    const seen: { text: string; through: boolean; close: boolean; dot: string | null }[] = [];
     (window as unknown as { bubbles: typeof seen }).bubbles = seen;
     const done = new WeakSet<Element>();
     new MutationObserver(() => {
@@ -56,12 +56,13 @@ test('on a phone a bot move shows a bubble that taps go through, except its ×',
         const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
         const x = b.querySelector('button')!.getBoundingClientRect();
         const hit = document.elementFromPoint(x.left + x.width / 2, x.top + x.height / 2);
+        const dot = b.querySelector('.dot');
         seen.push({ text: b.textContent ?? '', through: !under?.closest('[data-testid="toast"]'),
-          close: !!hit?.closest('button[aria-label="Dismiss"]') });
+          close: !!hit?.closest('button[aria-label="Dismiss"]'), dot: dot && getComputedStyle(dot).boxShadow });
       }
     }).observe(document.body, { childList: true, subtree: true });
   });
-  const moves = async () => (await alice.evaluate(() => (window as unknown as { bubbles: { text: string }[] }).bubbles))
+  const moves = async () => (await alice.evaluate(() => (window as unknown as { bubbles: { text: string; dot: string | null }[] }).bubbles))
     .filter((b) => /took|placed|sent|scored/.test(b.text));
   for (let i = 0; i < 40 && (await moves()).length === 0; i++) {
     if (!(await playTurn(alice, id))) await alice.waitForTimeout(200);
@@ -69,6 +70,7 @@ test('on a phone a bot move shows a bubble that taps go through, except its ×',
   const [first] = await moves();
   expect(first).toBeDefined();
   expect(first.text).toContain('Bot 2');
+  if (/took \d/.test(first.text)) expect(first.dot).toContain('inset');  // the colour dot has an edge in any theme
   const all = await alice.evaluate(() => (window as unknown as { bubbles: { through: boolean; close: boolean }[] }).bubbles);
   expect(all.every((b) => b.through && b.close)).toBe(true);
 });

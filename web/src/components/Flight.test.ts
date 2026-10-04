@@ -53,6 +53,16 @@ describe('Flight', () => {
     }
   });
 
+  it('a failing animation still lands, so no tile stays hidden', async () => {
+    document.body.insertAdjacentHTML('beforeend', '<div data-flight-source="2"></div><div data-flight-dest="1:3"></div>');
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 10, 40, 40));
+    (Element.prototype as unknown as { animate: unknown }).animate = vi.fn(() => { throw new Error('no animations here'); });
+    const onLanded = vi.fn();
+    render(Flight, { plan: { id: 8, seat: 1, source: 2, color: 0, line: { row: 3, count: 2 }, floor: [] }, onLanded });
+    await vi.waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
+    expect(document.querySelectorAll('.flight img.sprite')).toHaveLength(0);
+  });
+
   it('nothing to fly to still lands', async () => {
     const onLanded = vi.fn();  // no source or destination elements on the page
     render(Flight, { plan: { id: 8, seat: 1, source: 2, color: 0, line: { row: 3, count: 2 }, floor: [] }, onLanded });

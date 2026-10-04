@@ -65,6 +65,7 @@
   .line { display: flex; justify-content: flex-end; gap: 2px; }
   .wall { grid-template-columns: repeat(5, var(--cell)); }
   i { display: block; width: var(--cell); height: var(--cell); border-radius: 2px; flex: none; }
+  i:not(.empty) { box-shadow: var(--tile-edge); }
   i.empty { border: 1px solid var(--line); }
   i.tint { opacity: 0.22; }
   .floor { display: flex; align-items: center; gap: 2px; }

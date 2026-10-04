@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { newGame, noHorizontalScroll, person } from './helpers';
+import { newGame, noHorizontalScroll, person, playTurn } from './helpers';
 
 test('4 players on a 360 px phone with a very long email', async ({ browser }) => {
   const long = 'someone.with.an.extraordinarily.long.address.for.testing@example-with-a-long-domain.com';
@@ -79,4 +79,17 @@ test('480 px phone keeps the factory grid', async ({ browser }) => {
   await expect(alice.getByTestId('status')).toBeVisible();
   expect(await alice.locator('.tray .slot').first().evaluate((el) => getComputedStyle(el).position)).toBe('static');
   await noHorizontalScroll(alice);
+});
+
+test('phone, dark: filled cells on opponent cards have a visible edge', async ({ browser }) => {
+  const alice = await person(browser, 'alice@example.com', { width: 360, height: 740 }, { colorScheme: 'dark' });
+  const id = await newGame(alice, 2);
+  await alice.getByRole('button', { name: 'Start' }).click();
+  await expect(alice.getByTestId('status')).toBeVisible();
+  const filled = alice.locator('.others-phone .card .line i:not(.empty)');
+  for (let i = 0; i < 40 && (await filled.count()) === 0; i++) {
+    if (!(await playTurn(alice, id))) await alice.waitForTimeout(200);
+  }
+  // A black tile (#2b2b2b) on the dark card would otherwise vanish.
+  expect(await filled.first().evaluate((el) => getComputedStyle(el).boxShadow)).toContain('inset');
 });
