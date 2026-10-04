@@ -83,6 +83,6 @@
   section + section { margin-top: 12px; }
   h2 { margin-top: 0; }
   .new { display: flex; gap: 8px; flex-wrap: wrap; }
-  .games { padding-left: 1.2em; display: grid; gap: 6px; }
+  .games { padding-left: 1.2em; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .games a { display: block; max-width: 100%; }
 </style>

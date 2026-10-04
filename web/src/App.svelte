@@ -40,10 +40,10 @@
 
 <style>
   .top { background: var(--header); color: var(--header-ink); box-shadow: var(--shadow); }
-  .inner { display: flex; gap: 10px; align-items: center; padding: 10px 12px; max-width: 1280px; margin: 0 auto; }
+  .inner { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 10px 12px; max-width: 1280px; margin: 0 auto; }
   .top a { color: var(--header-ink); }
   .top a { white-space: nowrap; }
   .logo { font-family: var(--display); font-weight: 700; font-size: 1.4em; letter-spacing: 0.14em;
     text-transform: uppercase; text-decoration: none; margin-right: auto; }
-  .who { max-width: 45vw; opacity: 0.75; }
+  .who { max-width: 45vw; min-width: 0; opacity: 0.75; }
 </style>

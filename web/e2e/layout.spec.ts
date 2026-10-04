@@ -21,6 +21,23 @@ test('4 players on a 360 px phone with a very long email', async ({ browser }) =
   await expect(alice.locator('svg.factory')).toHaveCount(9);
 });
 
+test('360 px header with the Playhub links and a very long email has no horizontal scroll', async ({ browser }) => {
+  const long = 'someone.with.an.extraordinarily.long.address.for.testing@example-with-a-long-domain.com';
+  const page = await person(browser, long, { width: 360, height: 740 });
+  // The e2e server has no hub configured, so answer /api/me as if it had.
+  await page.route('**/api/me', async (route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: { ...(await res.json()), hubUrl: 'https://play.signalwave.example' } });
+  });
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: 'Playhub' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Leaderboard' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '2 players' })).toBeVisible();
+  await noHorizontalScroll(page);
+  await newGame(page, 2);
+  await noHorizontalScroll(page);
+});
+
 for (const width of [900, 1120, 1440]) {
   for (const players of [2, 3, 4]) {
     test(`desktop ${width} px, ${players} players: small opponents, large factories`, async ({ browser }) => {
