@@ -9,7 +9,9 @@ Allow policy, saving the application's JSON first so it can be restored.
 
 Token: CLOUDFLARE_API_TOKEN or ~/.config/cloudflare/api-token (mode 600), as cf_publish.py.
 Refuses unless exactly one self-hosted application has exactly that domain and
-exactly one reusable policy has that name with decision allow. The application
+exactly one reusable policy has that name with decision allow. Both modes refuse
+while the application holds a non-reusable policy (it would be deleted), and
+--restore refuses a backup whose id, domain or AUD differ from the live app's. The application
 is updated in place (its AUD tag must not change), never recreated.
 """
 import argparse
@@ -169,8 +171,13 @@ def restore(api, hostname, backup, dry_run, log=print):
     saved = json.loads(Path(backup).expanduser().read_text())
     acct = account(api)
     app = find_app(api, acct, hostname)
-    ids = [p["id"] for p in sorted(saved.get("policies") or [], key=lambda p: p.get("precedence", 0))]
-    return update(api, acct, app, ids, dry_run, log)
+    for key in ("id", "domain", "aud"):
+        if saved.get(key) != app.get(key):
+            raise Refused(f"{backup} is not a backup of this application: its {key} is {saved.get(key)!r}, "
+                          f"the live application's is {app.get(key)!r}")
+    # The policies the restore takes off the application must survive that, as in set_policy.
+    check_removable(app, api.list(f"/accounts/{acct}/access/policies"))
+    return update(api, acct, app, policy_ids(saved), dry_run, log)
 
 
 def main(argv=None):

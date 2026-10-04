@@ -115,10 +115,8 @@ backup:
 	docker run --rm -v azul-$(STACK)_azul$(if $(filter dev,$(STACK)),-dev,)-data:/data -v $(BACKUP_DIR):/out alpine \
 		sh -c 'f=/out/azul-$(STACK)-$$(date +%Y%m%d-%H%M%S).db && apk add -q sqlite && sqlite3 /data/azul.db ".backup $$f" && chown $(UID):$(GID) $$f && echo $$f'
 
-# make restore FILE=~/backups/azul/azul-serve-....db [STACK=serve]; stops the app first.
+# make restore FILE=~/backups/azul/azul-serve-....db [STACK=serve]: checks the
+# backup, stops the app, keeps the old database as azul.db.before-restore-<ts>
+# in the volume, swaps the backup in and starts the app (scripts/restore.sh).
 restore:
-	test -f "$(FILE)"
-	docker compose -f docker-compose.$(STACK).yml $(if $(filter serve,$(STACK)),--env-file .env.serve,) stop app
-	docker run --rm -v azul-$(STACK)_azul$(if $(filter dev,$(STACK)),-dev,)-data:/data -v $(abspath $(FILE)):/in.db:ro alpine \
-		sh -c 'rm -f /data/azul.db-wal /data/azul.db-shm && cp /in.db /data/azul.db && chown 1654:1654 /data/azul.db'
-	docker compose -f docker-compose.$(STACK).yml $(if $(filter serve,$(STACK)),--env-file .env.serve,) up -d --wait app
+	scripts/restore.sh "$(STACK)" "$(FILE)"

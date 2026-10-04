@@ -121,6 +121,27 @@ class SetPolicyTests(unittest.TestCase):
         asp.restore(api, "catan.signalwave.dev", self.backup, dry_run=False, log=lambda *_: None)
         self.assertEqual(api.writes[-1][1]["policies"], ["friends"])
 
+    def test_restore_refuses_a_backup_of_another_app(self):
+        for field, other in (("id", "app9"), ("domain", "other.signalwave.dev"), ("aud", "AUD-OTHER")):
+            with self.subTest(field=field):
+                with open(self.backup, "w") as f:
+                    json.dump(catan(**{field: other}), f)
+                api = FakeApi([catan(policies=[{"id": "players-policy", "precedence": 1}])], [FRIENDS, PLAYERS])
+                with self.assertRaises(asp.Refused) as cm:
+                    asp.restore(api, "catan.signalwave.dev", self.backup, dry_run=False, log=lambda *_: None)
+                self.assertIn(field, str(cm.exception))
+                self.assertEqual(api.writes, [])
+
+    def test_restore_refuses_when_a_live_policy_is_not_reusable(self):
+        with open(self.backup, "w") as f:
+            json.dump(catan(), f)
+        legacy = {"id": "legacy", "name": "Legacy", "decision": "allow", "reusable": False}
+        api = FakeApi([catan(policies=[{"id": "legacy", "name": "Legacy", "precedence": 1}])], [FRIENDS, legacy])
+        with self.assertRaises(asp.Refused) as cm:
+            asp.restore(api, "catan.signalwave.dev", self.backup, dry_run=False, log=lambda *_: None)
+        self.assertIn("make_reusable", str(cm.exception))
+        self.assertEqual(api.writes, [])
+
     def test_refuses_a_policy_that_is_not_reusable_or_not_listed(self):
         for policies in ([PLAYERS], [dict(FRIENDS, reusable=False), PLAYERS]):
             with self.subTest(policies=len(policies)):

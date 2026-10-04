@@ -72,7 +72,13 @@ Catan. No restart. Removing someone takes effect when their Access session (24 h
 ## Day to day
 
 - Deploy a change: `git pull && make serve` (games survive; bots resume).
-- Backup: `make backup` (files in `~/backups/azul`). Restore: `make restore FILE=...`.
+- Backup: `make backup` (files in `~/backups/azul`). Restore: `make restore FILE=...`. It checks
+  the file first (SQLite integrity, schema version, `games` table) and refuses an invalid one
+  before stopping anything. It then stops the app, keeps the current database in the volume as
+  `azul.db.before-restore-<timestamp>` (the name is printed; delete old ones by hand), swaps the
+  backup in and starts the app. To undo it, copy the safety copy out
+  (`docker run --rm -v azul-serve_azul-data:/data -v ~/backups/azul:/out alpine cp /data/azul.db.before-restore-<timestamp> /out/`)
+  and `make restore FILE=` that file.
 - Rotate the tunnel token
   ([docs](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/#rotate-a-token-without-service-disruption)):
   go to **Networking** > **Tunnels**, select the tunnel, and on the **Overview** tab select
