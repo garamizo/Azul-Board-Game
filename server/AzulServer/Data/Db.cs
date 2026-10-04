@@ -5,7 +5,7 @@ namespace AzulServer.Data;
 public sealed class Db(AzulOptions options)
 {
     // Append only; each entry runs once, in a transaction.
-    static readonly string[] Migrations =
+    internal static readonly string[] Migrations =
     [
         """
         CREATE TABLE games(
@@ -39,6 +39,26 @@ public sealed class Db(AzulOptions options)
           PRIMARY KEY(game_id, version));
         CREATE UNIQUE INDEX moves_request ON moves(game_id, request_id) WHERE request_id IS NOT NULL;
         CREATE INDEX games_status ON games(status, updated_at);
+        """,
+        // 2: hub reporting (docs/superpowers/specs/2026-10-04-hub-results-design.md). No FK on hub_reports: a deleted game's report is still sent.
+        """
+        ALTER TABLE games ADD COLUMN started_at TEXT;
+        ALTER TABLE games ADD COLUMN finished_at TEXT;
+        ALTER TABLE games ADD COLUMN hub_tracked INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE games ADD COLUMN bot_key TEXT;
+        CREATE TABLE hub_reports(
+          game_id TEXT PRIMARY KEY,
+          body TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('pending','sent','failed')),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at TEXT NOT NULL,
+          last_status INTEGER,
+          last_error TEXT,
+          created_at TEXT NOT NULL,
+          sent_at TEXT,
+          alerted_at TEXT,
+          lease_id TEXT);
+        CREATE INDEX hub_reports_due ON hub_reports(status, next_attempt_at);
         """,
     ];
 

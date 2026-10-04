@@ -30,7 +30,7 @@ public sealed class StoreTests : IDisposable
         using var c = db.Open();
         using var cmd = c.CreateCommand();
         cmd.CommandText = "SELECT MAX(v) FROM schema_version";
-        Assert.Equal(1L, (long)cmd.ExecuteScalar()!);
+        Assert.Equal(2L, (long)cmd.ExecuteScalar()!);
     }
 
     [Fact]

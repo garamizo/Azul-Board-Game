@@ -7,7 +7,14 @@ public sealed record SeatRecord(int Idx, string Kind, string? Email);
 public sealed record GameRecord(
     string Id, string Creator, string Status, int NumPlayers, long Version,
     string? StateJson, string? FinishReason, string CreatedAt, string UpdatedAt,
-    IReadOnlyList<SeatRecord> Seats);
+    IReadOnlyList<SeatRecord> Seats)
+{
+    /// Hub reporting (schema 2): stamped by Start and by the finishing commit.
+    public string? StartedAt { get; init; }
+    public string? FinishedAt { get; init; }
+    public bool HubTracked { get; init; }
+    public string? BotKey { get; init; }
+}
 
 public sealed record MoveRecord(
     string GameId, long Version, int Seat, string Actor, string MoveJson,
@@ -17,7 +24,7 @@ public sealed class ConcurrencyException(string message) : Exception(message);
 
 public static class GameStore
 {
-    const string GameColumns = "id, creator, status, num_players, version, state_json, finish_reason, created_at, updated_at";
+    const string GameColumns = "id, creator, status, num_players, version, state_json, finish_reason, created_at, updated_at, started_at, finished_at, hub_tracked, bot_key";
     const string MoveColumns = "game_id, version, seat, actor, move_json, request_id, request_hash, result_json, at";
 
     static SqliteCommand Command(SqliteConnection c, SqliteTransaction? tx, string sql, params (string Name, object? Value)[] args)
@@ -34,7 +41,13 @@ public static class GameStore
 
     static GameRecord ReadGame(SqliteDataReader r) => new(
         r.GetString(0), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt64(4),
-        Str(r, 5), Str(r, 6), r.GetString(7), r.GetString(8), []);
+        Str(r, 5), Str(r, 6), r.GetString(7), r.GetString(8), [])
+    {
+        StartedAt = Str(r, 9),
+        FinishedAt = Str(r, 10),
+        HubTracked = r.GetInt64(11) != 0,
+        BotKey = Str(r, 12),
+    };
 
     static MoveRecord ReadMove(SqliteDataReader r) => new(
         r.GetString(0), r.GetInt64(1), r.GetInt32(2), r.GetString(3), r.GetString(4),
@@ -89,9 +102,10 @@ public static class GameStore
     public static void Insert(SqliteConnection c, SqliteTransaction tx, GameRecord g)
     {
         using (var cmd = Command(c, tx,
-            $"INSERT INTO games({GameColumns}) VALUES ($id, $creator, $status, $n, $v, $state, $finish, $created, $updated)",
+            $"INSERT INTO games({GameColumns}) VALUES ($id, $creator, $status, $n, $v, $state, $finish, $created, $updated, $started, $finished, $tracked, $botkey)",
             ("$id", g.Id), ("$creator", g.Creator), ("$status", g.Status), ("$n", g.NumPlayers), ("$v", g.Version),
-            ("$state", g.StateJson), ("$finish", g.FinishReason), ("$created", g.CreatedAt), ("$updated", g.UpdatedAt)))
+            ("$state", g.StateJson), ("$finish", g.FinishReason), ("$created", g.CreatedAt), ("$updated", g.UpdatedAt),
+            ("$started", g.StartedAt), ("$finished", g.FinishedAt), ("$tracked", g.HubTracked ? 1 : 0), ("$botkey", g.BotKey)))
             cmd.ExecuteNonQuery();
         InsertSeats(c, tx, g);
     }
@@ -99,10 +113,12 @@ public static class GameStore
     public static void Update(SqliteConnection c, SqliteTransaction tx, GameRecord g, long expectedVersion)
     {
         using (var cmd = Command(c, tx,
-            "UPDATE games SET status = $status, version = $v, state_json = $state, finish_reason = $finish, updated_at = $updated " +
+            "UPDATE games SET status = $status, version = $v, state_json = $state, finish_reason = $finish, updated_at = $updated, " +
+            "started_at = $started, finished_at = $finished, hub_tracked = $tracked, bot_key = $botkey " +
             "WHERE id = $id AND version = $expected",
             ("$status", g.Status), ("$v", g.Version), ("$state", g.StateJson), ("$finish", g.FinishReason),
-            ("$updated", g.UpdatedAt), ("$id", g.Id), ("$expected", expectedVersion)))
+            ("$updated", g.UpdatedAt), ("$started", g.StartedAt), ("$finished", g.FinishedAt),
+            ("$tracked", g.HubTracked ? 1 : 0), ("$botkey", g.BotKey), ("$id", g.Id), ("$expected", expectedVersion)))
         {
             if (cmd.ExecuteNonQuery() != 1)
                 throw new ConcurrencyException($"game {g.Id} is not at version {expectedVersion}");
