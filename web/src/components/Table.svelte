@@ -121,8 +121,8 @@
     </div>
     <div class="others-phone">
       {#each others as i}
-        <OpponentCard player={board.players[i]} name={seatName(view, i)} active={i === board.activeSeat}
-          onOpen={() => (openSeat = i)} />
+        <OpponentCard player={board.players[i]} name={seatName(view, i)} seat={i}
+          active={i === board.activeSeat && view.status === 'playing'} onOpen={() => (openSeat = i)} />
       {/each}
     </div>
   </section>

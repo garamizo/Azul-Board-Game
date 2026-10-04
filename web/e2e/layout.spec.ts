@@ -14,6 +14,10 @@ test('4 players on a 360 px phone with a very long email', async ({ browser }) =
   await expect(other.getByTestId('status')).toBeVisible();
   await noHorizontalScroll(alice);
   await noHorizontalScroll(other);
+  const card = alice.locator('.others-phone .card').first();
+  await expect(card.locator('.line i')).toHaveCount(15);
+  await expect(card.locator('.wall i')).toHaveCount(25);
+  await expect(card.locator('.floor i')).toHaveCount(7);
   await expect(alice.locator('svg.factory')).toHaveCount(9);
 });
 
