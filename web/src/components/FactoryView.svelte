@@ -13,7 +13,7 @@
   const slots = [[35, 35], [95, 35], [35, 95], [95, 95]];
 </script>
 
-<svg viewBox="0 0 130 130" class="factory" class:empty={tiles.length === 0} role="group" aria-label={`factory ${index + 1}`}>
+<svg viewBox="0 0 130 130" class="factory" data-flight-source={index} class:empty={tiles.length === 0} role="group" aria-label={`factory ${index + 1}`}>
   <image href="/assets/sprites/factory.png" width="130" height="130" />
   {#each tiles as color, i}
     <image class="tile" class:selected={selectedColor === color} class:pickable={canPick(color)}

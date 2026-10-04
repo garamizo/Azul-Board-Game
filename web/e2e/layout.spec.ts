@@ -21,7 +21,7 @@ test('4 players on a 360 px phone with a very long email', async ({ browser }) =
   await expect(alice.locator('svg.factory')).toHaveCount(9);
 });
 
-for (const width of [900, 1440]) {
+for (const width of [900, 1120, 1440]) {
   for (const players of [2, 3, 4]) {
     test(`desktop ${width} px, ${players} players: small opponents, large factories`, async ({ browser }) => {
       const alice = await person(browser, 'alice@example.com', { width, height: 900 });
@@ -50,4 +50,33 @@ test('dark mode follows the system setting', async ({ browser }) => {
   await page.goto('/');
   await expect(page.getByRole('button', { name: '2 players' })).toBeVisible();
   expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(15, 26, 43)');
+});
+
+test('1440 px, 4 players: factories on a ring around a round centre', async ({ browser }) => {
+  const alice = await person(browser, 'alice@example.com', { width: 1440, height: 900 });
+  await newGame(alice, 4);
+  await alice.getByRole('button', { name: 'Start' }).click();
+  await expect(alice.getByTestId('status')).toBeVisible();
+  const boxes = await Promise.all((await alice.locator('svg.factory').all()).map(async (f) => (await f.boundingBox())!));
+  expect(boxes).toHaveLength(9);
+  const c = boxes.map((b) => ({ x: b.x + b.width / 2, y: b.y + b.height / 2, d: b.width }));
+  for (let i = 0; i < c.length; i++) {
+    const n = c[(i + 1) % c.length];
+    expect(c[i].d).toBeGreaterThanOrEqual(90);
+    expect(Math.hypot(n.x - c[i].x, n.y - c[i].y)).toBeGreaterThanOrEqual(c[i].d);  // circles apart
+  }
+  const ring = (await alice.locator('.tray .factories').boundingBox())!;
+  const centre = (await alice.locator('[data-flight-source="9"]').boundingBox())!;
+  expect(Math.abs(centre.x + centre.width / 2 - (ring.x + ring.width / 2))).toBeLessThan(2);
+  expect(Math.abs(centre.y + centre.height / 2 - (ring.y + ring.height / 2))).toBeLessThan(2);
+  await noHorizontalScroll(alice);
+});
+
+test('480 px phone keeps the factory grid', async ({ browser }) => {
+  const alice = await person(browser, 'alice@example.com', { width: 480, height: 900 });
+  await newGame(alice, 4);
+  await alice.getByRole('button', { name: 'Start' }).click();
+  await expect(alice.getByTestId('status')).toBeVisible();
+  expect(await alice.locator('.tray .slot').first().evaluate((el) => getComputedStyle(el).position)).toBe('static');
+  await noHorizontalScroll(alice);
 });

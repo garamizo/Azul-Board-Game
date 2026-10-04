@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { GameView, MoveBody } from '../lib/types';
-  import FactoryView from './FactoryView.svelte';
-  import CenterView from './CenterView.svelte';
+  import Market from './Market.svelte';
   import PlayerBoard from './PlayerBoard.svelte';
   import StatusBar from './StatusBar.svelte';
   import WallChooser from './WallChooser.svelte';
@@ -33,7 +32,6 @@
   });
 
   const board = $derived(view.board!);
-  const centre = $derived(board.factories.length);
   const mySeat = $derived(view.you.seat);
   const legal = $derived(view.legal);
   const takeSel = $derived(sel?.phase === 'take' ? sel : null);
@@ -76,16 +74,10 @@
   <div class="status-area"><StatusBar {view} /></div>
 
   <section class="market panel" aria-label="factories">
-    <div class="factories">
-      {#each board.factories as counts, i}
-        <FactoryView index={i} {counts}
-          selectedColor={takeSel?.source?.factory === i ? takeSel.source.color : null}
-          canPick={(c) => !!legal && canPick(legal, i, c)} onPick={(c) => pick(i, c)} />
-      {/each}
-    </div>
-    <CenterView index={centre} counts={board.center} hasFirst={board.centerHasFirst}
-      selectedColor={takeSel?.source?.factory === centre ? takeSel.source.color : null}
-      canPick={(c) => !!legal && canPick(legal, centre, c)} onPick={(c) => pick(centre, c)} />
+    <Market {board}
+      selected={(f) => (takeSel?.source?.factory === f ? takeSel.source.color : null)}
+      canPick={(f, c) => !!legal && canPick(legal, f, c)}
+      onPick={pick} />
   </section>
 
   {#if mySeat !== null}
@@ -147,7 +139,6 @@
 
 <style>
   .table { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
-  .factories { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; margin-bottom: 8px; }
   .actions { display: flex; gap: 8px; margin-top: 8px; }
   .others-desktop { display: none; }
   .others-phone { display: grid; gap: 6px; }
@@ -162,7 +153,6 @@
     .mine { grid-area: mine; }
     .others { grid-area: others; }
     .result { grid-area: result; }
-    .factories { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
     /* Always three slots, so an opponent's board is the same size at any player count. */
     .others-desktop { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
     .others-phone { display: none; }
