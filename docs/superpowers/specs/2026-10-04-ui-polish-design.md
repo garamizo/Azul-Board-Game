@@ -365,6 +365,7 @@ infinite, alternate) box-shadow pulse in `--glow`. Not during `finished`.
 | `web/src/lib/narrate.ts` | **new**, pure |
 | `web/src/lib/toasts.svelte.ts` | **new** |
 | `web/src/lib/motion.ts` | **new**: `reducedMotion()` |
+| `web/src/lib/selection.ts` | `arrivals(prev, next)` |
 | `web/src/lib/geometry.ts` | `TILE_COLORS`, `wallColor(r, c)`, `floorPenalty(n)`, `ringLayout(n)` |
 | `web/package.json` | `@fontsource/cinzel` |
 
