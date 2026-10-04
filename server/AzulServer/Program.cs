@@ -9,6 +9,9 @@ using Microsoft.Extensions.FileProviders;
 if (args.Contains("--healthcheck"))
     return await HealthCheck.RunAsync();
 
+if (args is ["hub", ..])
+    return await HubCommands.RunAsync(args[1..], Console.Out, Environment.GetEnvironmentVariable);
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(sp =>
     AzulOptions.FromEnvironment(key => sp.GetRequiredService<IConfiguration>()[key]));
