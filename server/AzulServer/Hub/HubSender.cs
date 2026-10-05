@@ -18,6 +18,12 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
     /// How long an idle sender waits for a wake before its next cycle.
     public TimeSpan IdleWait { get; init; } = TimeSpan.FromSeconds(60);
 
+    /// How long reading a refusal's body may take. The client's 10 s timeout
+    /// ends at the headers (ResponseHeadersRead), so the body has its own.
+    public TimeSpan BodyReadTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    public const string BodyUnreadable = "(body unreadable)";
+
     public enum Outcome { Sent, Failed, RetryKey, RetryTransient, RetryConfig }
 
     /// hub 5.3: any 2xx delivered; 409/422 permanent; 401 keep and alert; 5xx
@@ -40,8 +46,6 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
     public static SocketsHttpHandler PrimaryHandler() => new() { AllowAutoRedirect = false };
 
     static string Stamp(DateTimeOffset t) => t.UtcDateTime.ToString("O");
-
-    static string? Cut(string? s) => s is null ? null : s.Length <= 500 ? s : s[..500];
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -104,13 +108,13 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
                 Content = new StringContent(claim.Body, Encoding.UTF8, "application/json"),
             };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.Hub.Key);
-            using var res = await http.CreateClient(HttpName).SendAsync(req, ct);
-            status = (int)res.StatusCode;
-            detail = await res.Content.ReadAsStringAsync(ct);
+            using var res = await http.CreateClient(HttpName).SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            status = (int)res.StatusCode;   // the status decides; the body is only a diagnostic
+            if (Classify(status) != Outcome.Sent) detail = await ReadDetail(res.Content, ct);
         }
-        catch (Exception e) when (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested))
+        catch (Exception e) when (status is null && (e is HttpRequestException || (e is TaskCanceledException && !ct.IsCancellationRequested)))
         {
-            detail = e.Message;   // a network error, or the client's 10 s timeout
+            detail = HubDiagnostics.Clean(e.Message);   // a network error, or the client's 10 s timeout
         }
 
         var outcome = Classify(status);
@@ -121,8 +125,8 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
         bool owned = outcome switch
         {
             Outcome.Sent => HubOutbox.MarkSent(c2, id, claim.LeaseId, status!.Value, Stamp(after)),
-            Outcome.Failed => HubOutbox.MarkFailed(c2, id, claim.LeaseId, status!.Value, Cut(detail)),
-            _ => HubOutbox.MarkRetry(c2, id, claim.LeaseId, status, Cut(detail),
+            Outcome.Failed => HubOutbox.MarkFailed(c2, id, claim.LeaseId, status!.Value, detail),
+            _ => HubOutbox.MarkRetry(c2, id, claim.LeaseId, status, detail,
                 Stamp(after + Backoff(claim.Attempts + 1, Random.Shared.NextDouble()))),
         };
         if (!owned)
@@ -136,17 +140,44 @@ public sealed class HubSender(Db db, AzulOptions options, HubSignal signal, IHtt
                 log.LogInformation("hub accepted the report of game {Game} ({Status})", id, status);
                 return true;
             case Outcome.Failed:
-                log.LogError("hub refused the report of game {Game} permanently ({Status}): {Body}", id, status, Cut(detail));
+                log.LogError("hub refused the report of game {Game} permanently ({Status}): {Body}", id, status, detail);
                 return false;
             case Outcome.RetryKey:
                 log.LogError("hub rejected the game key (401) for game {Game}; reports stay pending until AZUL_HUB_KEY is fixed and the server restarted", id);
                 return false;
             case Outcome.RetryTransient:
-                log.LogWarning("hub unavailable for game {Game} ({Status}): {Detail}", id, status, Cut(detail));
+                log.LogWarning("hub unavailable for game {Game} ({Status}): {Detail}", id, status, detail);
                 return false;
             default:
                 log.LogError("hub answered {Status} for game {Game}; check AZUL_HUB_URL", status, id);
                 return false;
+        }
+    }
+
+    /// At most MaxLength characters of a refusal's body, redacted, read under
+    /// BodyReadTimeout. A body that stalls or breaks off gives BodyUnreadable;
+    /// the status already read stands either way.
+    async Task<string?> ReadDetail(HttpContent content, CancellationToken ct)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(BodyReadTimeout);
+        try
+        {
+            await using var stream = await content.ReadAsStreamAsync(limit.Token);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var buffer = new char[HubDiagnostics.MaxLength];
+            int n = 0;
+            while (n < buffer.Length)
+            {
+                int read = await reader.ReadAsync(buffer.AsMemory(n), limit.Token);
+                if (read == 0) break;
+                n += read;
+            }
+            return HubDiagnostics.Clean(new string(buffer, 0, n), truncated: n == buffer.Length);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return BodyUnreadable;
         }
     }
 

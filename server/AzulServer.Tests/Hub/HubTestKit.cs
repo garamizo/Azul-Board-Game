@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Nodes;
 using Azul;
 using AzulServer.Data;
 using AzulServer.Games;
@@ -46,14 +47,19 @@ public static class HubFixtures
     public static SeatRecord Bot(int idx, string? owner = null) => new(idx, SeatKind.Bot, owner);
 }
 
-/// Records every request; answers with `Respond()` or throws `Throw`.
+/// Records every request; answers with `Respond()` when set, throws `Throw`,
+/// or else answers as the hub's ingest does (~/playhub ingest.ts): the first
+/// body for an external_id is recorded (201), the same body again is 200, a
+/// different body for a recorded external_id is 409, no external_id is 422.
 public sealed class FakeHub : HttpMessageHandler, IHttpClientFactory
 {
     public readonly List<(HttpRequestMessage Request, string Body)> Requests = new();
-    public Func<HttpResponseMessage> Respond = () => new HttpResponseMessage(HttpStatusCode.Created) { Content = new StringContent("{}") };
+    public Func<HttpResponseMessage>? Respond;
     public Exception? Throw;
     /// When set, every request is recorded and then held until the test completes it.
     public TaskCompletionSource? Gate;
+    /// The body the hub recorded for each external_id.
+    public readonly Dictionary<string, string> Accepted = new();
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
@@ -61,10 +67,67 @@ public sealed class FakeHub : HttpMessageHandler, IHttpClientFactory
         lock (Requests) Requests.Add((request, body));
         if (Gate is { } gate) await gate.Task.WaitAsync(ct);
         if (Throw is not null) throw Throw;
-        return Respond();
+        return Respond is { } respond ? respond() : Ingest(body);
     }
 
+    HttpResponseMessage Ingest(string body)
+    {
+        string? id = null;
+        try { id = JsonNode.Parse(body)?["external_id"]?.GetValue<string>(); } catch (Exception) { }
+        lock (Accepted)
+        {
+            if (id is null) return Answer(HttpStatusCode.UnprocessableEntity, "{\"error\":\"external_id: Required\"}");
+            if (!Accepted.TryGetValue(id, out var recorded))
+            {
+                Accepted[id] = body;
+                return Answer(HttpStatusCode.Created, "{}");
+            }
+            return recorded == body
+                ? Answer(HttpStatusCode.OK, "{}")
+                : Answer(HttpStatusCode.Conflict, "{\"error\":\"external_id already recorded with a different result.\"}");
+        }
+    }
+
+    static HttpResponseMessage Answer(HttpStatusCode status, string json) =>
+        new(status) { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+
     public HttpClient CreateClient(string name) => new(this, disposeHandler: false);
+}
+
+/// A response body whose bytes never come (`Stall`) or break off after a
+/// first chunk (`Truncated`).
+public sealed class BrokenBody(bool stall, string prefix = "") : Stream
+{
+    public static HttpContent Stall() => new StreamContent(new BrokenBody(true));
+    public static HttpContent Truncated(string prefix) => new StreamContent(new BrokenBody(false, prefix));
+
+    byte[]? first = System.Text.Encoding.UTF8.GetBytes(prefix);
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+    {
+        if (stall) { await Task.Delay(Timeout.Infinite, ct); return 0; }
+        if (first is { Length: > 0 } chunk)
+        {
+            first = null;
+            int n = Math.Min(chunk.Length, buffer.Length);
+            chunk.AsMemory(0, n).CopyTo(buffer);
+            return n;
+        }
+        throw new IOException("The response ended prematurely.");
+    }
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) =>
+        ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
 public sealed class ListLogger<T> : ILogger<T>

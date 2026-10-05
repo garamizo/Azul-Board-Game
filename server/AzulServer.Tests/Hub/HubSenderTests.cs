@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Nodes;
 using AzulServer.Data;
 using AzulServer.Games;
 using AzulServer.Hub;
@@ -22,7 +23,8 @@ public sealed class HubSenderTests : IDisposable
     static readonly HubOptions Configured = new() { Url = "http://hub.test", Key = "phk_test" };
 
     HubSender Sender(HubOptions? hub = null) =>
-        new(db, new AzulOptions { Hub = hub ?? Configured }, new HubSignal(), hubHttp, time, log);
+        new(db, new AzulOptions { Hub = hub ?? Configured }, new HubSignal(), hubHttp, time, log)
+            { BodyReadTimeout = TimeSpan.FromMilliseconds(300) };
 
     string Now => time.GetUtcNow().UtcDateTime.ToString("O");
 
@@ -99,13 +101,14 @@ public sealed class HubSenderTests : IDisposable
     public async Task UnprocessableIsPermanentWithItsBodyKept()
     {
         hubHttp.Respond = () => new HttpResponseMessage(HttpStatusCode.UnprocessableEntity)
-            { Content = new StringContent("{\"error\":\"players: must be 1-12\"}" + new string('x', 600)) };
+            { Content = new StringContent("{\"error\":\"players: must be 1-12\"}" + string.Concat(Enumerable.Repeat(" word", 200))) };
         QueueRow("g");
         await Sender().RunCycleAsync(default);
         var row = Row("g");
         Assert.Equal(("failed", 422), (row.Status, row.LastStatus));
         Assert.StartsWith("{\"error\":\"players", row.LastError);
-        Assert.Equal(500, row.LastError!.Length);
+        Assert.InRange(row.LastError!.Length, 490, 500);   // cut at 500, less a partial last word
+        Assert.EndsWith(" ", row.LastError);
         Assert.Equal(1, log.Count(LogLevel.Error, "permanently"));
         await Sender().RunCycleAsync(default);
         Assert.Single(hubHttp.Requests);   // never resent
@@ -288,34 +291,116 @@ public sealed class HubSenderTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task ARebuildDuringASendWinsOverTheOldOutcome()
+    void QueueGame(string id, string body)
     {
-        using (var c = db.Open())
-        using (var tx = c.BeginTransaction())
-        {
-            GameStore.Insert(c, tx, Finished("g", [Human(0, "alice@example.com"), Bot(1)]));
-            HubOutbox.Queue(c, tx, "g", "{\"old\":1}", Now);
-            tx.Commit();
-        }
+        using var c = db.Open();
+        using var tx = c.BeginTransaction();
+        GameStore.Insert(c, tx, Finished(id, [Human(0, "alice@example.com"), Bot(1)]));
+        HubOutbox.Queue(c, tx, id, body, Now);
+        tx.Commit();
+    }
+
+    const string OldBody = "{\"external_id\":\"g\",\"old\":1}";
+
+    /// The hub may already have recorded the body in flight; replacing it
+    /// would turn that accepted report into a 409 (see the next test).
+    [Fact]
+    public async Task ARetryOrRebuildDuringALiveLeaseIsRefused()
+    {
+        QueueGame("g", OldBody);
+        hubHttp.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cycle = Sender().RunCycleAsync(default);
+        await WaitUntil(() => hubHttp.Requests.Count == 1);   // the old body is in flight
+        Assert.Equal(HubOutbox.InFlight, HubOutbox.Rebuild(db, "g", null, Now));
+        using (var c = db.Open()) Assert.Equal(HubOutbox.InFlight, HubOutbox.ResetForRetry(c, "g", Now));
+        Assert.Equal(OldBody, Row("g").Body);
+        Assert.NotNull(Row("g").LeaseId);
+
+        hubHttp.Gate.SetResult();   // the hub records the old body: 201
+        Assert.Equal(1, await cycle);
+        Assert.Equal(("sent", 201, OldBody), (Row("g").Status, Row("g").LastStatus, hubHttp.Accepted["g"]));
+        Assert.Equal(0, log.Count(LogLevel.Information, "stale hub outcome"));
+        Assert.Equal("already sent", HubOutbox.Rebuild(db, "g", null, Now));
+    }
+
+    /// A lease outlives any live request (10 s timeout, 5 s body read), so an
+    /// expired one means the send is presumed dead: a rebuild replaces the
+    /// row and a late answer is dropped. If that request did reach the hub,
+    /// the new body is a different result for the same external_id: 409.
+    [Fact]
+    public async Task AfterTheLeaseExpiresARebuildReplacesTheRowAndALateAnswerIsDropped()
+    {
+        QueueGame("g", OldBody);
         hubHttp.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var sender = Sender();
         var cycle = sender.RunCycleAsync(default);
-        await WaitUntil(() => hubHttp.Requests.Count == 1);   // the old body is in flight
-        Assert.Equal("{\"old\":1}", hubHttp.Requests[0].Body);
+        await WaitUntil(() => hubHttp.Requests.Count == 1);
+        time.Advance(TimeSpan.FromMinutes(6));   // past the 5-minute lease
         Assert.Equal("rebuilt", HubOutbox.Rebuild(db, "g", null, Now));
-        hubHttp.Gate.SetResult();   // the hub now answers 201 to the OLD body
-        await cycle;
+        hubHttp.Gate.SetResult();   // the hub records the OLD body after all
+        Assert.Equal(0, await cycle);
         var row = Row("g");
         Assert.Equal(("pending", (string?)null), (row.Status, row.LeaseId));
         Assert.Contains("\"external_id\":\"g\"", row.Body);
+        Assert.NotEqual(OldBody, row.Body);
         Assert.Equal(1, log.Count(LogLevel.Information, "stale hub outcome"));
 
         hubHttp.Gate = null;
-        Assert.Equal(1, await sender.RunCycleAsync(default));   // the new body goes out fresh
-        Assert.Equal(2, hubHttp.Requests.Count);
-        Assert.Contains("\"external_id\":\"g\"", hubHttp.Requests[1].Body);
-        Assert.Equal("sent", Row("g").Status);
+        Assert.Equal(0, await sender.RunCycleAsync(default));   // the new body goes out
+        Assert.Equal(row.Body, hubHttp.Requests[1].Body);
+        Assert.Equal(("failed", 409), (Row("g").Status, Row("g").LastStatus));
+        Assert.Equal(OldBody, hubHttp.Accepted["g"]);
+    }
+
+    [Fact]
+    public async Task ATwoHundredIsSentWithoutReadingItsBody()
+    {
+        hubHttp.Respond = () => new HttpResponseMessage(HttpStatusCode.Created) { Content = BrokenBody.Stall() };
+        QueueRow("g");
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Equal(1, await Sender().RunCycleAsync(default));
+        Assert.True(timer.Elapsed < TimeSpan.FromMilliseconds(300), $"{timer.Elapsed} waited on the body");
+        Assert.Equal(("sent", 201, (string?)null), (Row("g").Status, Row("g").LastStatus, Row("g").LastError));
+    }
+
+    public static TheoryData<string> BrokenBodies => new() { "stall", "truncated" };
+
+    [Theory]
+    [MemberData(nameof(BrokenBodies))]
+    public async Task AnUnreadableBodyKeepsTheStatus(string kind)
+    {
+        hubHttp.Respond = () => new HttpResponseMessage(HttpStatusCode.UnprocessableEntity)
+            { Content = kind == "stall" ? BrokenBody.Stall() : BrokenBody.Truncated("{\"error\":\"pla") };
+        QueueRow("g");
+        await Sender().RunCycleAsync(default);
+        var row = Row("g");
+        Assert.Equal(("failed", (int?)422, (string?)HubSender.BodyUnreadable), (row.Status, row.LastStatus, row.LastError));
+        Assert.Equal(1, log.Count(LogLevel.Error, "permanently"));
+    }
+
+    [Fact]
+    public async Task HubAnswersAreRedactedInTheRowTheLogAndHubStatus()
+    {
+        const string leaky = "{\"error\":\"players.0.email: Carol.Sentinel@Example.com taken; key phk_SENTINEL_k3y-1 " +
+                             "Authorization: Bearer SENTINELtoken\"}";
+        hubHttp.Respond = () => new HttpResponseMessage(HttpStatusCode.UnprocessableEntity) { Content = new StringContent(leaky) };
+        QueueRow("refused");
+        await Sender().RunCycleAsync(default);
+        hubHttp.Respond = () => new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent(leaky) };
+        QueueRow("pending");
+        await Sender().RunCycleAsync(default);
+
+        Assert.Equal("{\"error\":\"players.0.email: <email> taken; key <key> Authorization: Bearer <key>", Row("refused").LastError);
+        Assert.Equal(Row("refused").LastError, Row("pending").LastError);
+        Assert.Equal(1, log.Count(LogLevel.Error, "<email>"));
+        Assert.Equal(1, log.Count(LogLevel.Warning, "<email>"));
+        lock (log.Entries) Assert.DoesNotContain(log.Entries, e => e.Message.Contains("SENTINEL", StringComparison.OrdinalIgnoreCase));
+
+        var dir = Path.GetDirectoryName(new SqliteConnectionStringBuilder(db.ConnectionString).DataSource)!;
+        var output = new StringWriter();
+        Assert.Equal(0, await HubCommands.RunAsync(["status"], output, k => k == "AZUL_DATA_DIR" ? dir : null));
+        Assert.Equal(Row("refused").LastError, (string?)JsonNode.Parse(output.ToString())!["failed"]![0]!["lastError"]);
+        Assert.DoesNotContain("SENTINEL", output.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     // ---------- through the real app ----------

@@ -96,19 +96,33 @@ public sealed class HubOutboxTests : IDisposable
     }
 
     [Fact]
-    public void ARetryInvalidatesTheInFlightOutcome()
+    public void ARetryRefusesALiveLeaseAndInvalidatesAnExpiredOne()
     {
         QueueRow("g");
-        var lease = Claim("g");
+        var lease = Claim("g");   // the lease ends at T5
         using var c = db.Open();
-        Assert.Equal("pending", HubOutbox.ResetForRetry(c, "g", T1));
+        Assert.Equal(HubOutbox.InFlight, HubOutbox.ResetForRetry(c, "g", T1));
+        Assert.Equal((lease, T5), (Row("g").LeaseId, Row("g").NextAttemptAt));   // untouched
+        Assert.Equal("pending", HubOutbox.ResetForRetry(c, "g", T5));   // expired
         var reset = Row("g");
-        Assert.Equal(((string?)null, T1), (reset.LeaseId, reset.NextAttemptAt));
-        Assert.False(HubOutbox.MarkSent(c, "g", lease, 201, T1));
+        Assert.Equal(((string?)null, T5), (reset.LeaseId, reset.NextAttemptAt));
+        Assert.False(HubOutbox.MarkSent(c, "g", lease, 201, T5));
         Assert.False(HubOutbox.MarkFailed(c, "g", lease, 422, "late"));
         Assert.False(HubOutbox.MarkRetry(c, "g", lease, 500, "late", T9));
         var after = Row("g");
-        Assert.Equal(("pending", 0, T1), (after.Status, after.Attempts, after.NextAttemptAt));
+        Assert.Equal(("pending", 0, T5), (after.Status, after.Attempts, after.NextAttemptAt));
+    }
+
+    [Fact]
+    public void ARetryRestartsTheBackoff()
+    {
+        QueueRow("g");
+        using var c = db.Open();
+        Assert.True(HubOutbox.MarkRetry(c, "g", Claim("g"), 503, "down", T1));
+        Assert.True(HubOutbox.MarkRetry(c, "g", HubOutbox.TryClaim(c, "g", T1, T5)!.LeaseId, 503, "down", T9));
+        Assert.Equal(2, Row("g").Attempts);
+        Assert.Equal("pending", HubOutbox.ResetForRetry(c, "g", T5));   // backing off, not leased
+        Assert.Equal((0, T5, (string?)null), (Row("g").Attempts, Row("g").NextAttemptAt, Row("g").LeaseId));
     }
 
     [Fact]
@@ -148,8 +162,9 @@ public sealed class HubOutboxTests : IDisposable
         using var c = db.Open();
         HubOutbox.MarkFailed(c, "f", lf, 409, "dup");
         HubOutbox.MarkSent(c, "s", ls, 200, T1);
+        Assert.Equal(1, Row("f").Attempts);
         Assert.Equal("pending", HubOutbox.ResetForRetry(c, "f", T5));
-        Assert.Equal(("pending", T5), (Row("f").Status, Row("f").NextAttemptAt));
+        Assert.Equal(("pending", T5, 0), (Row("f").Status, Row("f").NextAttemptAt, Row("f").Attempts));
         Assert.Equal("already sent", HubOutbox.ResetForRetry(c, "s", T5));
         Assert.Equal("sent", Row("s").Status);
         Assert.Equal("no report", HubOutbox.ResetForRetry(c, "nope", T5));
@@ -162,8 +177,10 @@ public sealed class HubOutboxTests : IDisposable
         InsertGame(Finished("g", Two));
         QueueRow("g", "{\"stale\":true}");
         QueueRow("gone", "{\"keep\":true}");
-        var lease = Claim("g");   // a send is in flight
-        Assert.Equal("rebuilt", HubOutbox.Rebuild(db, "g", null, T5));
+        var lease = Claim("g");   // a send is in flight until T5
+        Assert.Equal(HubOutbox.InFlight, HubOutbox.Rebuild(db, "g", null, T1));
+        Assert.Equal(("{\"stale\":true}", lease), (Row("g").Body, Row("g").LeaseId));
+        Assert.Equal("rebuilt", HubOutbox.Rebuild(db, "g", null, T5));   // the lease has expired
         Assert.Equal("game deleted", HubOutbox.Rebuild(db, "gone", null, T5));
         var g = Row("g");
         Assert.Equal(("pending", 0, T5, (string?)null), (g.Status, g.Attempts, g.NextAttemptAt, g.LeaseId));

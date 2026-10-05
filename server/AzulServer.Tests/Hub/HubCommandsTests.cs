@@ -82,6 +82,26 @@ public sealed class HubCommandsTests : IDisposable
     }
 
     [Fact]
+    public async Task RetryReportsASendInFlightPerGame()
+    {
+        using (var c = db.Open())
+        using (var tx = c.BeginTransaction())
+        {
+            GameStore.Insert(c, tx, Finished("busy", [Human(0, "alice@example.com"), Bot(1)]));
+            tx.Commit();
+        }
+        Queue("busy"); Queue("idle");
+        using (var c = db.Open())
+            HubOutbox.TryClaim(c, "busy", DateTime.UtcNow.ToString("O"), DateTime.UtcNow.AddMinutes(5).ToString("O"));
+        var (code, o) = await Run("retry", "busy");
+        Assert.Equal(0, code);
+        Assert.Equal("busy", (string?)o["results"]![0]!["gameId"]);
+        Assert.Equal("in flight; retry later", (string?)o["results"]![0]!["outcome"]);
+        Assert.Equal("in flight; retry later", (string?)(await Run("retry", "busy", "--rebuild")).Out["results"]![0]!["outcome"]);
+        Assert.Equal("pending", (string?)(await Run("retry", "idle")).Out["results"]![0]!["outcome"]);
+    }
+
+    [Fact]
     public async Task RebuildKeepsAReportWhoseGameIsGone()
     {
         using (var c = db.Open())

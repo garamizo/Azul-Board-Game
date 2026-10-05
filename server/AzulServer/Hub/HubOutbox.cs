@@ -15,9 +15,10 @@ public sealed record HubSummary(IReadOnlyDictionary<string, int> Counts, IReadOn
 
 /// Every statement on hub_reports. Timestamps are GameService's "O" UTC
 /// strings, which compare correctly as text. Outcomes are written only under
-/// the lease that claimed the row (spec 6.3, lease ownership): a retry or a
-/// rebuild clears lease_id, so a request still in flight cannot record its
-/// answer over a reset or replaced row.
+/// the lease that claimed the row (spec 6.3, lease ownership). A retry or a
+/// rebuild refuses a row whose lease is live, since the hub may already have
+/// accepted the body in flight; once the lease has expired it clears
+/// lease_id, so a late answer cannot land on a reset or replaced row.
 public static class HubOutbox
 {
     static SqliteCommand Command(SqliteConnection c, SqliteTransaction? tx, string sql, params (string Name, object? Value)[] args)
@@ -172,20 +173,36 @@ public static class HubOutbox
     public static List<string> FailedIds(SqliteConnection c) =>
         Ids(c, null, "SELECT game_id FROM hub_reports WHERE status = 'failed' ORDER BY created_at");
 
-    /// One conditional statement (no read-then-update); clearing lease_id
-    /// drops the answer of any send still in flight.
+    /// The outcome of a retry or rebuild that finds a send in flight.
+    public const string InFlight = "in flight; retry later";
+
+    /// A row whose lease is live: claimed, and its lease (next_attempt_at)
+    /// not yet expired. Retry and rebuild leave it alone (spec 6.3).
+    const string NotLeased = "NOT (hub_reports.lease_id IS NOT NULL AND hub_reports.next_attempt_at > $now)";
+
+    /// One conditional statement (no read-then-update). It skips a sent row
+    /// and a row with a live lease; it clears an expired lease, which drops
+    /// the late answer of that send, and restarts the backoff (attempts = 0).
     public static string ResetForRetry(SqliteConnection c, string gameId, string now)
     {
-        if (Exec(c, null, "UPDATE hub_reports SET status = 'pending', lease_id = NULL, next_attempt_at = $now " +
-                          "WHERE game_id = $g AND status <> 'sent'", ("$now", now), ("$g", gameId)) == 1)
+        if (Exec(c, null, "UPDATE hub_reports SET status = 'pending', attempts = 0, lease_id = NULL, next_attempt_at = $now " +
+                          $"WHERE game_id = $g AND status <> 'sent' AND {NotLeased}", ("$now", now), ("$g", gameId)) == 1)
             return "pending";
-        return Exists(c, null, gameId) ? "already sent" : "no report";   // only to say why nothing changed
+        return Unchanged(Get(c, null, gameId));   // only to say why nothing changed
     }
 
+    static string Unchanged(HubRow? row) => row switch
+    {
+        null => "no report",
+        { Status: "sent" } => "already sent",
+        _ => InFlight,
+    };
+
     /// Rebuild from the stored game and replace the row only when the build
-    /// succeeds; a sent row and a report whose game is gone are never touched
-    /// (spec 6.4). One BEGIN IMMEDIATE transaction reads the game and writes
-    /// the row; the replacing statement clears lease_id.
+    /// succeeds; a sent row, a row with a live lease and a report whose game
+    /// is gone are never touched (spec 6.4). One BEGIN IMMEDIATE transaction
+    /// reads the game and writes the row; the replacing statement clears an
+    /// expired lease_id.
     public static string Rebuild(Db db, string gameId, string? publicOrigin, string now)
     {
         using var c = db.Open();
@@ -199,9 +216,9 @@ public static class HubOutbox
             "VALUES ($g, $b, 'pending', 0, $now, $now) " +
             "ON CONFLICT(game_id) DO UPDATE SET body = excluded.body, status = 'pending', attempts = 0, " +
             "next_attempt_at = excluded.next_attempt_at, last_status = NULL, last_error = NULL, sent_at = NULL, " +
-            "alerted_at = NULL, lease_id = NULL WHERE hub_reports.status <> 'sent'",
+            $"alerted_at = NULL, lease_id = NULL WHERE hub_reports.status <> 'sent' AND {NotLeased}",
             ("$g", gameId), ("$b", built.Body), ("$now", now));
-        if (changed == 0) return "already sent";
+        if (changed == 0) return Unchanged(Get(c, tx, gameId));
         tx.Commit();
         return "rebuilt";
     }
