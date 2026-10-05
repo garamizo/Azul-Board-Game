@@ -37,11 +37,17 @@ public sealed record AzulOptions
             if (team.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) team = team[8..];
             team = team.TrimEnd('/');
         }
-        var hubUrl = Get("AZUL_HUB_URL")?.TrimEnd('/');
-        if (hubUrl is not null && !(Uri.TryCreate(hubUrl, UriKind.Absolute, out var hub)
-                                    && (hub.Scheme == Uri.UriSchemeHttp || hub.Scheme == Uri.UriSchemeHttps)))
-            throw new InvalidOperationException(
-                $"AZUL_HUB_URL must be an absolute http(s) URL such as http://playhub:3000, not \"{hubUrl}\".");
+        string? HttpUrl(string key, string example)
+        {
+            var url = Get(key)?.TrimEnd('/');
+            if (url is not null && !(Uri.TryCreate(url, UriKind.Absolute, out var u)
+                                     && (u.Scheme == Uri.UriSchemeHttp || u.Scheme == Uri.UriSchemeHttps)))
+                throw new InvalidOperationException(
+                    $"{key} must be an absolute http(s) URL such as {example}, not \"{url}\".");
+            return url;
+        }
+        var hubUrl = HttpUrl("AZUL_HUB_URL", "http://playhub:3000");
+        var hubPublicUrl = HttpUrl("AZUL_HUB_PUBLIC_URL", "https://play.signalwave.dev");
         return new AzulOptions
         {
             TeamDomain = team,
@@ -59,7 +65,7 @@ public sealed record AzulOptions
             {
                 Url = hubUrl,
                 Key = Get("AZUL_HUB_KEY"),
-                PublicUrl = Get("AZUL_HUB_PUBLIC_URL")?.TrimEnd('/'),
+                PublicUrl = hubPublicUrl,
             },
         };
     }
