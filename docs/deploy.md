@@ -114,6 +114,10 @@ Finished games are reported to Playhub (play.signalwave.dev) over the shared doc
    (409/422) stays `failed`; after a fix, `make hub-retry GAME=<id>` resends it, or
    `make hub-retry GAME=<id> REBUILD=1` rebuilds the body first. A rotated key (401) keeps
    reports pending until the new key is in `.env.serve` and `make serve` restarts the app.
+   `hub-retry` answers `in flight; retry later` for a report being sent right now (try again
+   in a few minutes). The "pending for over an hour" alert counts from when the report was
+   queued (`created_at`), so a long-pending report that `hub-retry` resets may alert on the
+   next cycle.
 4. The bot's key (`mcts@...`) changes when the engine assembly changes (any AzulLibrary code,
    or a different compiler), when `AZUL_BOT_THINK_SECONDS` changes, or when
    `MctsBrain.BrainRevision` is bumped. After such a deploy, retire the old bot from

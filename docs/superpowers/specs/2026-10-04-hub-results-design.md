@@ -299,12 +299,18 @@ it logs a warning once.
 
 - Every outcome write (`sent`, `failed`, or a retry with backoff) is a single
   `UPDATE ... WHERE game_id = ? AND lease_id = ?` that also clears `lease_id`.
-- If it updates 0 rows, the row was reset or rebuilt while the request was in flight. The
-  stale outcome is logged at information level and dropped.
-- `hub retry` and `hub retry --rebuild` (6.4) clear `lease_id` and set
-  `next_attempt_at = now` in the same statement that resets or replaces the row. This
-  invalidates any in-flight outcome, so an old request's answer can never land on a
-  replaced body. The replaced body is then sent fresh on the next cycle.
+- If it updates 0 rows, the row was reset or rebuilt after its lease expired. The stale
+  outcome is logged at information level and dropped.
+- `hub retry` and `hub retry --rebuild` (6.4) refuse a row whose lease is live
+  (`lease_id IS NOT NULL AND next_attempt_at > now`): their conditional statement excludes
+  it, and the outcome is `in flight; retry later`. The hub may already have recorded the
+  body in flight, and a replaced body would then be answered 409 although the report was
+  accepted.
+- Once the lease has expired, the same statement that resets or replaces the row clears
+  `lease_id` and sets `next_attempt_at = now`, so a late answer can never land on a replaced
+  body, and the replaced body is sent fresh on the next cycle. A live request cannot outlast
+  its lease (10 s to the headers, 5 s for a refusal's body, a 5-minute lease), so an expired
+  lease means a send that died. If that send did reach the hub, the replaced body gets 409.
 
 **The request.**
 
@@ -312,13 +318,21 @@ it logs a warning once.
   `AZUL_HUB_URL.TrimEnd('/') + "/api/v1/results"`.
 - The body is sent as `StringContent(body, UTF8, "application/json")`, with
   `Authorization: Bearer <AZUL_HUB_KEY>`.
+- The request uses `HttpCompletionOption.ResponseHeadersRead`, and the outcome is
+  classified from the status code alone. A 2xx body is never read. For any other status,
+  at most 500 characters of the body are read, under a 5-second timeout, as a diagnostic.
+  If that read fails or stalls, the status stands and `last_error` is `(body unreadable)`.
+- Before a hub answer or a request error goes into `last_error` or a log line, emails
+  (Zod's `z.email()` character classes, unanchored) become `<email>`, `phk_…` keys become
+  `<key>`, and `Bearer <token>` becomes `Bearer <key>`. A text cut at 500 characters first
+  loses its trailing partial token, so no fragment of an email or key survives the cut.
 
 **Outcomes** (hub §5.3), the same table as Catan's:
 
 | Answer | Row becomes | Log |
 | --- | --- | --- |
 | 2xx | `sent` | information |
-| 409, 422 | `failed` (permanent), body ≤ 500 chars in `last_error` | **error** |
+| 409, 422 | `failed` (permanent), redacted body ≤ 500 chars in `last_error` | **error** |
 | 401 | `pending` + backoff | **error**: the key is wrong or rotated; set `AZUL_HUB_KEY` and restart |
 | 5xx, network error, timeout | `pending` + backoff | warning |
 | any other status | `pending` + backoff | **error** (a configuration fault: URL, content type) |
@@ -353,16 +367,20 @@ JSON document and exits.
 - **`/app/AzulServer hub status`** prints counts by status, the 20 newest failed rows, and
   the age of the oldest pending row.
 - **`/app/AzulServer hub retry <game_id>|--all-failed [--rebuild]`** puts rows back to
-  `pending`.
-  - The reset is one conditional statement: `status = 'pending'`, `lease_id = NULL` and
-    `next_attempt_at = now`, `WHERE status <> 'sent'`. There is no read-then-update, and it
-    invalidates an in-flight send (6.3, lease ownership).
+  `pending`. It prints `{"results": [{"gameId", "outcome"}]}`, one entry per game, where
+  `outcome` is `pending`, `rebuilt`, `already sent`, `no report`, `game deleted`,
+  `unbuildable: <reason>` or `in flight; retry later`.
+  - The reset is one conditional statement: `status = 'pending'`, `attempts = 0` (a manual
+    retry starts a fresh backoff), `lease_id = NULL` and `next_attempt_at = now`,
+    `WHERE status <> 'sent'` and the lease is not live. There is no read-then-update. A row
+    with a live lease is left alone (`in flight; retry later`); an expired lease is cleared,
+    which drops that send's late answer (6.3, lease ownership).
   - With `--rebuild`, the body is rebuilt first, inside one SQLite write transaction that
     reads the game and writes the row. The stored row is replaced with the fresh body only
     if the build succeeds: status `pending`, `attempts = 0`, `lease_id = NULL`,
-    `next_attempt_at = now`. A `sent` row is never replaced.
-  - A row whose game no longer exists is never rebuilt or deleted. It is reported as
-    `{"game_id", "skipped": "game deleted"}`, so a report is never lost by a rebuild.
+    `next_attempt_at = now`. A `sent` row and a row with a live lease are never replaced.
+  - A row whose game no longer exists is never rebuilt or deleted. Its outcome is
+    `game deleted`, so a report is never lost by a rebuild.
 - **`/app/AzulServer hub ping`** posts `{}` to the configured hub. It exits 0 on 422, which
   means the hub was reached, the key accepted and the content type passed. Any other answer
   exits non-zero, with the status. The aspnet image has no curl, so `serve-check` uses this.
@@ -377,6 +395,9 @@ JSON document and exits.
 | `AZUL_HUB_URL` | empty (off) | The serve compose sets `http://playhub:3000`. |
 | `AZUL_HUB_KEY` | empty (off) | The game key. Server-only; the web bundle never sees it. Vite in `web/` reads only `VITE_`-prefixed variables. |
 | `AZUL_HUB_PUBLIC_URL` | empty | The hub's public origin, for the header links. The serve compose sets `https://play.signalwave.dev`. |
+
+`AZUL_HUB_URL` and `AZUL_HUB_PUBLIC_URL`, when set, must be absolute `http(s)` URLs; anything
+else stops startup (and every `hub` command) with an error naming the variable.
 
 **`docker-compose.serve.yml`:**
 - `app` joins the external network `signalwave`, which the playhub serve stack declares
@@ -409,14 +430,15 @@ JSON document and exits.
   null.
 - **The header** (`web/src/App.svelte`) shows "Playhub" (→ `hubUrl`) and "Leaderboard"
   (→ `${hubUrl}/games/azul`) beside the email and Sign out, when `hubUrl` is set.
-- **On a phone-width screen** the two links stay on the header line: the email already
-  truncates (`.who.truncate`), and the links do not.
+- **On a phone-width screen** the header wraps to two lines when the links and the email do
+  not fit on one (`flex-wrap`): links never break inside, and the email truncates
+  (`.who.truncate`). Nothing scrolls sideways at 360 px (`web/e2e/layout.spec.ts`).
 
 ## 9. Failure handling summary
 
 | Failure | Effect |
 | --- | --- |
-| Building the report throws | The move commits anyway and an error is logged. Reconcile retries every cycle and logs each failure. `Delete` is refused (409) until the report exists. |
+| Building the report throws | The move commits anyway and an error is logged. Reconcile retries every cycle; a failure is logged at error once per game per process, then at debug. `Delete` is refused (409) until the report exists. |
 | The process dies after commit | The report is already in `hub_reports`, written in the same transaction. |
 | Hub down, network missing, or 5xx | Pending, with backoff. A stuck alert after an hour. |
 | 401 | Pending, with an error log on each attempt. |
@@ -478,9 +500,15 @@ JSON document and exits.
 - **`HubSenderTests`** (fake `HttpMessageHandler`):
   - every outcome row in 6.3;
   - backoff, and the lease;
-  - **lease ownership:** a send blocked in a fake handler while `--rebuild` replaces the
-    body. When the handler then answers 2xx, the row stays `pending` with the new body, and
-    the next cycle sends that body;
+  - **lease ownership:** the fake hub answers like the hub's ingest (the first body for an
+    `external_id` 201, the same body 200, a different body 409). While a send is blocked in
+    it, `retry` and `--rebuild` answer `in flight; retry later` and the row becomes `sent`
+    with the body the hub recorded. Once the lease has expired, `--rebuild` replaces the
+    body, the late 2xx is dropped, and the replaced body gets 409;
+  - a refusal whose body stalls or breaks off keeps its status, with `(body unreadable)`;
+    a 2xx is `sent` without its body being read;
+  - an email, a `phk_` key and a bearer token in a hub answer appear neither in the logs
+    nor in `hub status`;
   - **an application-level containment test:** the sender's own database access fails on
     every cycle while a finishing move is committed through the API. The move commits, the
     report is queued, and the server keeps serving;

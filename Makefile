@@ -3,6 +3,7 @@
 SHELL := /bin/bash
 UID := $(shell id -u)
 GID := $(shell id -g)
+# Dev/test builds only; the production binary (and so the bot key) comes from the Dockerfile's pinned SDK.
 SDK_IMAGE := mcr.microsoft.com/dotnet/sdk:10.0
 NUGET_DIR := $(HOME)/.nuget/packages
 DOTNET := docker run --rm -i --user $(UID):$(GID) \
